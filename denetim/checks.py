@@ -15,6 +15,80 @@ TOLERANCE_DEFAULT = 0.01
 # rakam yer değiştirme hataları (12.345,67 → 12.354,67) yalnızca birkaç TL fark yaratır.
 KUR_TOLERANSI_VARSAYILAN = 1.0
 
+# ---------------------------------------------------------------------- maliyete eklenen vergiler
+# Alış faturasındaki bu vergiler indirilemez, maliyete eklenir (153/254/770 ... hesaplarına matrahla birlikte yazılır):
+# ÖTV (0071 I, 0073–0076 III, 0077 IV, 9077 II motorlu taşıtlar), ÖİV (4080, 4081), konaklama vergisi (0059),
+# BSMV (0021), elektrik / havagazı tüketim vergisi (4071, 8005), TRT payı (8004), çevre temizlik vergisi (8008).
+# Stopajlar (0003, 0011) ve KDV tevkifatı maliyet değildir. Firma başına değiştirilebilir.
+VARSAYILAN_MALIYET_VERGI_KODLARI = "0071, 0073, 0074, 0075, 0076, 0077, 9077, 4080, 4081, 0059, 0021, 4071, 8004, " \
+                                   "8005, 8008"
+
+
+def parse_vergi_kodlari(text):
+    """'9077, 0071; 4080' → ['9077', '0071', '4080'] (tekrarsız). Kodlar 4 haneye tamamlanır ('71' → '0071')."""
+    out = []
+    for parca in re.split(r"[,;\s]+", str(text or "")):
+        kod = re.sub(r"\D", "", parca)
+        if kod:
+            kod = kod.zfill(4)
+            if kod not in out:
+                out.append(kod)
+    return out
+
+
+class VergiAyarlari:
+    """Vergi mutabakatı ayarları (firma başına saklanır).
+
+    maliyet_kodlari: maliyete eklenen vergi türü kodları (parse_vergi_kodlari çıktısı; None → varsayılan)
+    """
+
+    def __init__(self, maliyet_kodlari=None):
+        self.maliyet_kodlari = parse_vergi_kodlari(VARSAYILAN_MALIYET_VERGI_KODLARI) if maliyet_kodlari is None \
+            else list(maliyet_kodlari)
+
+    def __repr__(self):
+        return f"VergiAyarlari(maliyet_kodlari={self.maliyet_kodlari})"
+
+
+def maliyet_vergisi_ozeti(invoices):
+    """maliyet_vergisi_ekle() çıktısından özet: kaç faturada maliyete eklenen vergi var, toplam (TL)."""
+    if invoices is None or invoices.empty or "maliyet_vergisi" not in invoices:
+        return {"fatura": 0, "toplam_tl": 0.0}
+    mv = invoices["maliyet_vergisi"].astype(float) * invoices["exchange_rate"].fillna(1.0).astype(float)
+    return {"fatura": int((mv > 0).sum()), "toplam_tl": round(float(mv.sum()), 2)}
+
+
+def maliyet_vergisi_metni(ozet, kodlar):
+    if not ozet:
+        return ""
+    tutar = f"{ozet['toplam_tl']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return (f"Maliyete eklenen vergiler ({', '.join(kodlar) or 'kod yok'}): {ozet['fatura']} faturada {tutar} TL; "
+            f"bu faturalarda beklenen maliyet = KDV hariç tutar + vergi")
+
+
+def maliyet_vergisi_ekle(invoices, taxes, kodlar=None):
+    """Faturalara maliyete eklenen vergi tutarını (belge para biriminde) ve vergi adlarını ekler.
+
+    taxes: DatabaseManager.get_invoice_taxes_df() (invoice_id, tax_code, tax_name, amount)
+    kodlar: parse_vergi_kodlari() çıktısı; None → VARSAYILAN_MALIYET_VERGI_KODLARI
+    Dönüş: invoices kopyası + maliyet_vergisi (float), maliyet_vergi_adlari (metin)
+    """
+    kodlar = parse_vergi_kodlari(VARSAYILAN_MALIYET_VERGI_KODLARI) if kodlar is None else list(kodlar)
+    inv = invoices.copy()
+    inv["maliyet_vergisi"] = 0.0
+    inv["maliyet_vergi_adlari"] = ""
+    if inv.empty or taxes is None or taxes.empty or "id" not in inv:
+        return inv
+    t = taxes[taxes["tax_code"].astype(str).isin(kodlar)]
+    if t.empty:
+        return inv
+    tutar = t.groupby("invoice_id")["amount"].sum()
+    adlar = t.groupby("invoice_id").apply(
+        lambda g: ", ".join(f"{k} {a}" for k, a in sorted(set(zip(g["tax_code"], g["tax_name"].fillna(""))))))
+    inv["maliyet_vergisi"] = inv["id"].map(tutar).fillna(0.0).astype(float)
+    inv["maliyet_vergi_adlari"] = inv["id"].map(adlar).fillna("")
+    return inv
+
 
 # ---------------------------------------------------------------------- fiyat analizi
 # Hizmet / hakediş kalemleri her ay farklı tutarda faturalanır; birim fiyat karşılaştırması anlamsızdır.
@@ -584,8 +658,11 @@ def faturasiz_ozeti_df(ozet):
 
 # ---------------------------------------------------------------------- kur farkı toleransı
 TUTAR_FARKI_COLS = ["Fatura_No", "Fatura_Tarihi", "Tedarikci", "Tedarikci_VKN", "KDV_Haric_Tutar_TL",
-                    "Yevmiye_Tutari_TL", "Fark_TL", "Dovizli", "Para_Birimi", "Kur", "Hesaplar", "Yevmiye_Belge_No",
-                    "Eslesme_Yontemi"]
+                    "Maliyete_Eklenen_Vergi_TL", "Beklenen_Tutar_TL", "Yevmiye_Tutari_TL", "Fark_TL", "Olasi_Neden",
+                    "Dovizli", "Para_Birimi", "Kur", "Hesaplar", "Yevmiye_Belge_No", "Eslesme_Yontemi"]
+NEDEN_VERGI_EKSIK = "Maliyete eklenecek vergi (ÖTV vb.) maliyete eklenmemiş"
+NEDEN_KDV_MALIYETTE = "KDV maliyete eklenmiş"
+NEDEN_CIFT_KAYIT = "Çift kayıt"
 KUR_FARKI_COLS = ["Fatura_No", "Fatura_Tarihi", "Tedarikci", "Tedarikci_VKN", "Para_Birimi", "Kur",
                   "KDV_Haric_Tutar_TL", "Yevmiye_Tutari_TL", "Fark_TL", "Fark_Yuzdesi", "Yevmiye_Belge_No"]
 
@@ -600,15 +677,37 @@ def izin_verilen_fark(tutar_tl, dovizli, tolerance=TOLERANCE_DEFAULT, kur_tolera
     return max(tolerance, abs(float(tutar_tl or 0)) * float(kur_toleransi) / 100)
 
 
+def _yakin(a, b, sinir):
+    return abs(float(a) - float(b)) <= sinir + 0.005
+
+
+def tutar_farki_nedeni(r, tolerance=TOLERANCE_DEFAULT, kur_toleransi=KUR_TOLERANSI_VARSAYILAN):
+    """Tutar farkının olası nedeni (bilgi): maliyete eklenecek vergi eksik, KDV maliyette ya da çift kayıt.
+
+    r: net_tl, beklenen_tl, maliyet_vergisi_tl, kdv_tl, Yevmiye_Tutari, Fark, Para_Birimi alanları
+    """
+    sinir = izin_verilen_fark(r["beklenen_tl"], r.get("Para_Birimi", "TRY") != "TRY", tolerance, kur_toleransi)
+    fark, mv, kdv = float(r["Fark"]), float(r.get("maliyet_vergisi_tl") or 0), float(r.get("kdv_tl") or 0)
+    if mv > sinir and _yakin(fark, -mv, sinir):
+        return NEDEN_VERGI_EKSIK
+    if kdv > sinir and _yakin(fark, kdv, sinir):
+        return NEDEN_KDV_MALIYETTE
+    if abs(float(r["beklenen_tl"])) > sinir and _yakin(abs(float(r["Yevmiye_Tutari"])), 2 * abs(float(r["beklenen_tl"])),
+                                                     2 * sinir):
+        return NEDEN_CIFT_KAYIT
+    return ""
+
+
 def kur_farki_ayir(eslesen, tolerance=TOLERANCE_DEFAULT, kur_toleransi=KUR_TOLERANSI_VARSAYILAN):
     """Eşleşen faturaları (Fark sütunu TL tolerans üstü olanlar) tutar farkı ve tolerans içi kur farkı olarak ayırır.
 
-    eslesen: reconcile() içindeki eşleşen faturalar (net_tl, Fark, Para_Birimi sütunlarıyla)
+    eslesen: reconcile() içindeki eşleşen faturalar (beklenen_tl ya da net_tl, Fark, Para_Birimi sütunlarıyla)
     Dönüş: (tutar farkı satırları, kur farkı (tolerans içi) satırları, özet dict)
     """
     fark = eslesen[eslesen["Fark"].abs() > tolerance]
     dovizli = fark["Para_Birimi"] != "TRY"
-    sinir = [izin_verilen_fark(t, d, tolerance, kur_toleransi) for t, d in zip(fark["net_tl"], dovizli)]
+    tutar = fark["beklenen_tl"] if "beklenen_tl" in fark else fark["net_tl"]
+    sinir = [izin_verilen_fark(t, d, tolerance, kur_toleransi) for t, d in zip(tutar, dovizli)]
     icinde = dovizli & (fark["Fark"].abs() <= pd.Series(sinir, index=fark.index, dtype=float) + 0.005)
     ozet = {"kur_toleransi": float(kur_toleransi or 0), "dovizli_fatura": int((eslesen["Para_Birimi"] != "TRY").sum()),
             "tolerans_ici": int(icinde.sum()), "asan": int((dovizli & ~icinde).sum())}
@@ -657,6 +756,13 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
     inv["Para_Birimi"] = inv["currency"].map(para_birimi).astype(object)
     inv["Kur"] = inv["exchange_rate"].fillna(1.0).astype(float)
     inv["net_tl"] = (inv["total_amount"].astype(float) * inv["exchange_rate"].fillna(1.0).astype(float)).round(2)
+    # Beklenen maliyet = KDV hariç tutar + maliyete eklenen vergiler (ÖTV vb.; bkz. maliyet_vergisi_ekle)
+    mv = inv["maliyet_vergisi"] if "maliyet_vergisi" in inv else pd.Series(0.0, index=inv.index)
+    inv["maliyet_vergisi_tl"] = (pd.to_numeric(mv, errors="coerce").fillna(0.0) * inv["Kur"]).round(2)
+    inv["beklenen_tl"] = (inv["net_tl"] + inv["maliyet_vergisi_tl"]).round(2)
+    if "vat_amount" not in inv:
+        inv["vat_amount"] = 0.0
+    inv["kdv_tl"] = (pd.to_numeric(inv["vat_amount"], errors="coerce").fillna(0.0) * inv["Kur"]).round(2)
 
     jou = journal.copy()
     if jou.empty:
@@ -713,7 +819,7 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
 
     # 3) Tutar + tarih yedek eşleşmesi (belge no hiçbir yerde bulunamayan faturalar)
     eslesen_belgeler = {d for d, _ in eslesme.values()}
-    kalan = {idx: (clear.at[idx, "issue_date"], clear.at[idx, "net_tl"]) for idx in clear.index
+    kalan = {idx: (clear.at[idx, "issue_date"], clear.at[idx, "beklenen_tl"]) for idx in clear.index
              if idx not in eslesme and idx not in belirsiz and idx not in diger}
     acik = {d: (sel_docs.at[d, "Yevmiye_Tarihi"], sel_docs.at[d, "Yevmiye_Tutari"]) for d in acik_belgeler
             if d not in eslesen_belgeler and d not in belirsiz_belgeler}
@@ -740,14 +846,16 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
     matched["document_no_norm"] = pd.Series([eslesme[i][0] for i in matched.index], index=matched.index, dtype=object)
     matched["Eslesme_Yontemi"] = pd.Series([eslesme[i][1] for i in matched.index], index=matched.index, dtype=object)
     matched = matched.merge(sel_grp, on="document_no_norm", how="left")
-    matched["Fark"] = (matched["Yevmiye_Tutari"].abs() - matched["net_tl"].abs()).round(2)
+    matched["Fark"] = (matched["Yevmiye_Tutari"].abs() - matched["beklenen_tl"].abs()).round(2)
     matched["Dovizli"] = (matched["Para_Birimi"] != "TRY").map({True: "Evet", False: "Hayır"})
     diff, kur, res.kur_ozeti = kur_farki_ayir(matched, tolerance, kur_toleransi)
-    tl_adlari = {"Yevmiye_Tutari": "Yevmiye_Tutari_TL", "Fark": "Fark_TL"}
+    diff = diff.assign(Olasi_Neden=[tutar_farki_nedeni(r, tolerance, kur_toleransi) for _, r in diff.iterrows()])
+    tl_adlari = {"Yevmiye_Tutari": "Yevmiye_Tutari_TL", "Fark": "Fark_TL", "maliyet_vergisi_tl":
+                 "Maliyete_Eklenen_Vergi_TL", "beklenen_tl": "Beklenen_Tutar_TL"}
     res["Tutar Farkları"] = diff.rename(columns=base_cols).rename(columns=tl_adlari)[TUTAR_FARKI_COLS] \
         .reset_index(drop=True)
     kur = kur.rename(columns=base_cols).rename(columns=tl_adlari)
-    kur["Fark_Yuzdesi"] = (kur["Fark_TL"] / kur["KDV_Haric_Tutar_TL"].where(kur["KDV_Haric_Tutar_TL"] != 0) * 100) \
+    kur["Fark_Yuzdesi"] = (kur["Fark_TL"] / kur["Beklenen_Tutar_TL"].where(kur["Beklenen_Tutar_TL"] != 0) * 100) \
         .astype(float).round(2)
     res.kur_farki = kur[KUR_FARKI_COLS].reset_index(drop=True)
 
@@ -881,24 +989,32 @@ def customer_mismatch(invoices, company_vkn):
 
 # ---------------------------------------------------------------------- genel rapor
 def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn, haric_onekler=None,
-                   fiyat_kurallari=None, kur_toleransi=KUR_TOLERANSI_VARSAYILAN):
+                   fiyat_kurallari=None, kur_toleransi=KUR_TOLERANSI_VARSAYILAN, vergi_ayarlari=None):
     """Tüm kontrolleri çalıştırır.
 
     haric_onekler: faturasız kayıt kontrolünde hariç tutulan belge no önekleri (None → varsayılan)
     fiyat_kurallari: FiyatKurallari (None → varsayılan kurallar)
     kur_toleransi: dövizli faturalarda yüzde kur farkı toleransı (bkz. reconcile)
+    vergi_ayarlari: VergiAyarlari (None → varsayılan)
     Dönüş: (özet DataFrame, OrderedDict(başlık → DataFrame), notlar, sayılar)
     sayılar: {"fatura", "yevmiye", "eslesme", "faturasiz_ozeti", "faturasiz_haric", "kur_ozeti", "kur_farki",
     "fiyat_ozeti", "fiyat_haric"}; mutabakat yapılmadıysa eslesme / faturasiz_ozeti / faturasiz_haric / kur_ozeti /
     kur_farki None.
     """
-    invoices = db.get_invoices_df()
+    vergi = vergi_ayarlari or VergiAyarlari()
+    invoices = maliyet_vergisi_ekle(db.get_invoices_df(), db.get_invoice_taxes_df(), vergi.maliyet_kodlari)
     lines = db.get_lines_df()
     journal = db.get_journal_df()
     sections = OrderedDict()
     notes = []
     eslesme = faturasiz_ozeti = faturasiz_haric = kur_ozeti = kur_farki = None
 
+    if not invoices.empty and "tax_detail" in invoices:
+        eski = int(((invoices["source"] == "XML") & invoices["tax_detail"].isna()).sum())
+        if eski:
+            notes.append(f"{eski} XML fatura önceki bir sürümle yüklenmiş: ÖTV ve tevkifat bilgisi yok (maliyete eklenen "
+                         "vergi ve tevkifat kontrolleri bu faturalarda eksik kalır). Tam kontrol için verileri silip "
+                         "XML'leri yeniden yükleyin.")
     fiyat = fiyat_analizi(lines, period_type, threshold, fiyat_kurallari)
     sections[f"Fiyat Anomalileri (±%{threshold:g})"] = fiyat.riskli
 
@@ -928,4 +1044,5 @@ def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn,
     return summary, sections, notes, {"fatura": len(invoices), "yevmiye": len(journal), "eslesme": eslesme,
                                       "faturasiz_ozeti": faturasiz_ozeti, "faturasiz_haric": faturasiz_haric,
                                       "kur_ozeti": kur_ozeti, "kur_farki": kur_farki,
-                                      "fiyat_ozeti": fiyat.ozet, "fiyat_haric": fiyat.haric}
+                                      "fiyat_ozeti": fiyat.ozet, "fiyat_haric": fiyat.haric,
+                                      "maliyet_vergisi": maliyet_vergisi_ozeti(invoices)}

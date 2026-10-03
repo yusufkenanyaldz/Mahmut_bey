@@ -30,7 +30,10 @@ INVOICE_SCHEMA = {
     "KDV_Orani": ["KDV", "KDV Oranı", "KDV %", "KDV Yüzdesi"],
     "Para_Birimi": ["Doviz", "Döviz", "Para Birimi", "Döviz Cinsi", "Döviz Türü"],
     "Kur": ["Doviz_Kuru", "Döviz Kuru", "Kuru"],
+    "OTV_Tutari": ["ÖTV", "OTV", "ÖTV Tutarı", "ÖTV TL", "Özel Tüketim Vergisi"],
 }
+# Excel'deki ÖTV_Tutari bu vergi türü koduyla saklanır (faturada ayrıca gösterilen ÖTV çoğunlukla motorlu taşıt ÖTV'sidir)
+EXCEL_OTV_KODU = "9077"
 INVOICE_REQUIRED = ["Fatura_No", "Tarih", "Tedarikci_VKN", "Tedarikci_Ad", "Urun_Adi", "Miktar", "Fiyat"]
 
 # "Fiş No" / "Yevmiye No" bilerek takma ad değildir: fiş/madde sıra numarasıdır, belge (fatura) numarası değil.
@@ -56,7 +59,7 @@ FIELD_LABELS = {
     "Tutar": "Tutar (Borç − Alacak yerine)", "Aciklama": "Açıklama", "Fatura_No": "Fatura No",
     "Tedarikci_VKN": "Tedarikçi VKN/TCKN", "Tedarikci_Ad": "Tedarikçi Adı", "Urun_Adi": "Ürün Adı",
     "Miktar": "Miktar", "Birim": "Birim", "Fiyat": "Birim Fiyat (KDV hariç)", "Iskonto": "İskonto",
-    "KDV_Orani": "KDV Oranı", "Para_Birimi": "Para Birimi", "Kur": "Kur",
+    "KDV_Orani": "KDV Oranı", "Para_Birimi": "Para Birimi", "Kur": "Kur", "OTV_Tutari": "ÖTV Tutarı",
 }
 # Eşleme türleri: (şema, zorunlu alanlar). Kayıtlı eşlemeler bu anahtarlarla saklanır.
 KIND_YEVMIYE, KIND_FATURA = "YEVMIYE", "FATURA"
@@ -407,6 +410,9 @@ def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None
         discount = num("Iskonto", 0.0, required=False)
         vat_rate = num("KDV_Orani", None, required=False)
         rate = num("Kur", 1.0, required=False)
+        otv = num("OTV_Tutari", 0.0, required=False) or 0.0
+        if otv < 0:
+            row_errors.append(f"OTV_Tutari negatif olamaz ({otv})")
         if qty is not None and qty <= 0 and "Miktar boş" not in row_errors:
             row_errors.append(f"Miktar sıfırdan büyük olmalı ({qty})")
         if price is not None and price < 0:
@@ -435,7 +441,9 @@ def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None
             "unit_price": price,
             "line_net": line_net,
             "vat_rate": vat_rate,
-            "vat_amount": line_net * vat_rate / 100 if vat_rate is not None else None,
+            # ÖTV KDV matrahına dahildir
+            "vat_amount": (line_net + otv) * vat_rate / 100 if vat_rate is not None else None,
+            "otv": otv,
         }
         header = {
             "invoice_no": invoice_no,
@@ -471,12 +479,18 @@ def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None
         header = grp["header"]
         net = sum(ln["line_net"] for ln in grp["lines"])
         vat_values = [ln["vat_amount"] for ln in grp["lines"] if ln["vat_amount"] is not None]
+        otv = round(sum(ln.pop("otv") for ln in grp["lines"]), 2)
+        taxes = [{"code": EXCEL_OTV_KODU, "name": "ÖTV (Excel)", "amount": otv, "percent": None,
+                  "taxable": round(net, 2)}] if otv else []
         header.update({
+            "taxes": taxes,
+            "other_tax_amount": otv,
+            "tax_detail": 1,
             "line_extension_amount": net,
             "allowance_total": 0.0,
             "total_amount": net,
             "vat_amount": sum(vat_values) if vat_values else 0.0,
-            "payable_amount": net + sum(vat_values) if vat_values else None,
+            "payable_amount": net + otv + sum(vat_values) if vat_values else None,
         })
         result.items.append((header, grp["lines"]))
     return result

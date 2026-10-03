@@ -566,6 +566,32 @@ class AuditApp(ctk.CTk):
         return checks.FiyatKurallari(w["tevkifat"].get(), w["kelime"].get(), checks.parse_kelime_listesi(text),
                                      int(min_alim))
 
+    def add_vergi_rows(self):
+        """Vergi mutabakatı ayarları: maliyete eklenen vergi türü kodları (Varsayılan butonuyla)."""
+        row = self.create_button_row()
+        kodlar = self.add_labeled_entry(
+            row, "Maliyete Eklenen Vergi Kodları:",
+            self.setting("maliyet_vergi_kodlari", checks.VARSAYILAN_MALIYET_VERGI_KODLARI), 420,
+            "boş: vergi eklenmez (ör. 9077 ÖTV II, 0071 ÖTV I, 4080 ÖİV)")
+
+        def reset():
+            kodlar.delete(0, "end")
+            kodlar.insert(0, checks.VARSAYILAN_MALIYET_VERGI_KODLARI)
+
+        ctk.CTkButton(row, text="Varsayılan", width=90, height=28, command=reset).pack(side="left")
+        return {"maliyet": kodlar}
+
+    def read_vergi_ayarlari(self, w):
+        """Vergi ayarlarını firma ayarlarına kaydeder ve checks.VergiAyarlari döndürür."""
+        text = w["maliyet"].get().strip()
+        self.db.set_setting("maliyet_vergi_kodlari", text)
+        return checks.VergiAyarlari(checks.parse_vergi_kodlari(text))
+
+    def maliyet_vergili_faturalar(self, vergi):
+        """Faturalar + maliyete eklenen vergi tutarları (beklenen maliyet için)."""
+        return checks.maliyet_vergisi_ekle(self.db.get_invoices_df(), self.db.get_invoice_taxes_df(),
+                                           vergi.maliyet_kodlari)
+
     @staticmethod
     def with_fiyat_haric_sheet(sections, haric, w):
         """Excel çıktısına, seçiliyse fiyat analizi dışında kalan satırların bilgi sayfasını ekler."""
@@ -1235,6 +1261,7 @@ class AuditApp(ctk.CTk):
         self.recon_period_var = self.add_period_menu(opts)
         self.tolerance_entry, self.recon_kur_entry = self.add_tolerans_row()
         self.recon_onek_entry, self.recon_haric_var = self.add_haric_onek_row()
+        self.recon_vergi = self.add_vergi_rows()
         row = self.create_button_row()
         self.add_button(row, "▶ Mutabakat Kontrolü Yap", self.run_reconciliation,
                         fg_color=("#e83e8f", "#d33682"), hover_color=("#d33682", "#a32a65"))
@@ -1256,7 +1283,8 @@ class AuditApp(ctk.CTk):
         box.delete("1.0", "end")
         self.log(box, "> Veritabanı taranıyor...")
         self.update()
-        invoices, journal = self.db.get_invoices_df(), self.db.get_journal_df()
+        vergi = self.read_vergi_ayarlari(self.recon_vergi)
+        invoices, journal = self.maliyet_vergili_faturalar(vergi), self.db.get_journal_df()
         if invoices.empty or journal.empty:
             self.recon_sections = self.recon_haric = self.recon_kur = None
             self.show_results({})
@@ -1274,7 +1302,8 @@ class AuditApp(ctk.CTk):
         self.log(box, f"> {checks.eslesme_ozeti_metni(res.eslesme_ozeti)}")
         self.log(box, f"> {checks.faturasiz_ozeti_metni(res.faturasiz_ozeti)}",
                  None if res.faturasiz_ozeti["isaretli"] else "uyari")
-        self.log(box, f"> {checks.kur_ozeti_metni(res.kur_ozeti)}\n")
+        self.log(box, f"> {checks.kur_ozeti_metni(res.kur_ozeti)}")
+        self.log(box, f"> {checks.maliyet_vergisi_metni(checks.maliyet_vergisi_ozeti(invoices), vergi.maliyet_kodlari)}\n")
         self.log_review_summary(box, res)
         self.show_results(res)
 
@@ -1310,6 +1339,7 @@ class AuditApp(ctk.CTk):
         self.audit_tolerance, self.audit_kur = self.add_tolerans_row()
         self.audit_rules = self.add_fiyat_kural_rows()
         self.audit_onek_entry, self.audit_haric_var = self.add_haric_onek_row()
+        self.audit_vergi = self.add_vergi_rows()
         row = self.create_button_row()
         self.add_button(row, "▶ Tüm Kontrolleri Çalıştır", self.run_full_audit,
                         fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
@@ -1332,13 +1362,14 @@ class AuditApp(ctk.CTk):
         accounts = parse_account_list(self.audit_accounts.get())
         self.db.set_setting("accounts", self.audit_accounts.get().strip())
         onekler = self.read_haric_onekler(self.audit_onek_entry)
+        vergi = self.read_vergi_ayarlari(self.audit_vergi)
         box = self.audit_box
         box.delete("1.0", "end")
         self.log(box, "> Tüm kontroller çalıştırılıyor...")
         self.update()
         summary, sections, notes, counts = checks.run_full_audit(
             self.db, self.audit_period_var.get(), threshold, accounts, tolerance, self.firm.vkn, onekler, kurallar,
-            kur)
+            kur, vergi)
         self.audit_haric = counts["faturasiz_haric"]
         self.audit_fiyat_haric = counts["fiyat_haric"]
         self.audit_kur_farki = counts["kur_farki"]
@@ -1358,6 +1389,7 @@ class AuditApp(ctk.CTk):
             self.log(box, f"> {checks.eslesme_ozeti_metni(counts['eslesme'])}")
             self.log(box, f"> {checks.faturasiz_ozeti_metni(counts['faturasiz_ozeti'])}")
             self.log(box, f"> {checks.kur_ozeti_metni(counts['kur_ozeti'])}")
+        self.log(box, f"> {checks.maliyet_vergisi_metni(counts['maliyet_vergisi'], vergi.maliyet_kodlari)}")
         self.log(box, "")
         self.log_review_summary(box, sections)
         for note in notes:
@@ -1390,6 +1422,15 @@ class AuditApp(ctk.CTk):
                                 "Hariç önek listesi boş kaydedildi; faturasız kontrolde önek filtresi uygulanmayacak.")
 
         self.add_button(onek_entry.master, "💾 Kaydet", save_onekler)
+
+        vergi_w = self.add_vergi_rows()
+
+        def save_vergi():
+            v = self.read_vergi_ayarlari(vergi_w)
+            messagebox.showinfo("Tamam", f"Vergi ayarları kaydedildi (maliyete eklenen vergi kodu: "
+                                         f"{len(v.maliyet_kodlari)}).")
+
+        self.add_button(vergi_w["maliyet"].master, "💾 Kaydet", save_vergi)
 
         counts = self.db.counts()
         info2 = ctk.CTkFrame(self.main_frame, fg_color="transparent")

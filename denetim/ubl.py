@@ -10,6 +10,18 @@ NS = {
 }
 VAT_CODE = "0015"  # KDV vergi türü kodu
 
+# GİB vergi türü kodları (KDV dışındaki vergilerin raporda okunur adı için)
+VERGI_ADLARI = {
+    "0003": "GV Stopajı", "0011": "KV Stopajı", "0021": "BSMV", "0059": "Konaklama Vergisi",
+    "0061": "KKDF Kesintisi", "0071": "ÖTV I (Petrol)", "0073": "ÖTV III (Kolalı Gazoz)",
+    "0074": "ÖTV III (Alkollü İçecek)", "0075": "ÖTV III (Tütün)", "0076": "ÖTV III (Puro/Sigara)",
+    "0077": "ÖTV IV (Dayanıklı Tüketim)", "1047": "Damga Vergisi", "1048": "5035 Damga Vergisi",
+    "4071": "Elektrik Havagazı Tüketim Vergisi", "4080": "ÖİV", "4081": "5035 ÖİV", "8001": "Borsa Tescil Ücreti",
+    "8002": "Enerji Fonu", "8004": "TRT Payı", "8005": "Elektrik Tüketim Vergisi", "8006": "Telsiz Kullanım Ücreti",
+    "8007": "Telsiz Ruhsat Ücreti", "8008": "Çevre Temizlik Vergisi", "9021": "4961 BSMV",
+    "9077": "ÖTV II (Motorlu Taşıtlar)", "9944": "Hal Rüsumu",
+}
+
 
 class UBLParseError(Exception):
     pass
@@ -52,6 +64,41 @@ def _party(party_node):
         family = _text(party, "cac:Person/cbc:FamilyName") or ""
         name = f"{first} {family}".strip()
     return vkn, name or ""
+
+
+def _diger_vergiler(subtotals):
+    """KDV (0015) dışındaki vergi alt toplamlarını vergi türü koduna göre toplar.
+
+    Dönüş: [{"code", "name", "amount", "percent", "taxable"}] (belge para biriminde, koda göre sıralı)
+    """
+    out = {}
+    for sub in subtotals:
+        code = _text(sub, "cac:TaxCategory/cac:TaxScheme/cbc:TaxTypeCode")
+        if not code or code == VAT_CODE:
+            continue
+        t = out.setdefault(code, {"code": code, "name": VERGI_ADLARI.get(code)
+                                  or _text(sub, "cac:TaxCategory/cac:TaxScheme/cbc:Name") or code,
+                                  "amount": 0.0, "percent": _num(sub, "cbc:Percent", None), "taxable": 0.0})
+        t["amount"] += _num(sub, "cbc:TaxAmount", 0.0)
+        t["taxable"] += _num(sub, "cbc:TaxableAmount", 0.0)
+    for t in out.values():
+        t["amount"], t["taxable"] = round(t["amount"], 2), round(t["taxable"], 2)
+    return [out[k] for k in sorted(out)]
+
+
+def _tevkifat(totals):
+    """WithholdingTaxTotal (KDV tevkifatı) tutarı, oranı (%) ve tevkifat kodu."""
+    amount, rate, code = 0.0, None, None
+    for tot in totals:
+        subs = tot.findall("cac:TaxSubtotal", NS)
+        if subs:
+            for sub in subs:
+                amount += _num(sub, "cbc:TaxAmount", 0.0)
+                rate = rate if rate is not None else _num(sub, "cbc:Percent", None)
+                code = code or _text(sub, "cac:TaxCategory/cac:TaxScheme/cbc:TaxTypeCode")
+        else:
+            amount += _num(tot, "cbc:TaxAmount", 0.0)
+    return {"withholding_amount": round(amount, 2), "withholding_rate": rate, "withholding_code": code}
 
 
 def _find_invoice_root(root):
@@ -114,6 +161,14 @@ def parse_ubl(content, source_file=None):
     for sub in inv.findall("cac:TaxTotal/cac:TaxSubtotal", NS):
         if _text(sub, "cac:TaxCategory/cac:TaxScheme/cbc:TaxTypeCode") == VAT_CODE:
             vat_total += _num(sub, "cbc:TaxAmount", 0.0)
+    # KDV dışındaki vergiler (ÖTV, ÖİV, konaklama ...): belge toplamında yoksa satırlardan toplanır
+    taxes = _diger_vergiler(inv.findall("cac:TaxTotal/cac:TaxSubtotal", NS))
+    if not taxes:
+        taxes = _diger_vergiler(inv.findall("cac:InvoiceLine/cac:TaxTotal/cac:TaxSubtotal", NS))
+    # KDV tevkifatı: belge toplamında yoksa satırlardaki WithholdingTaxTotal toplanır
+    withholding = _tevkifat(inv.findall("cac:WithholdingTaxTotal", NS))
+    if withholding["withholding_amount"] == 0:
+        withholding = _tevkifat(inv.findall("cac:InvoiceLine/cac:WithholdingTaxTotal", NS))
 
     header = {
         "invoice_no": invoice_no,
@@ -131,6 +186,10 @@ def parse_ubl(content, source_file=None):
         "total_amount": tax_excl,
         "vat_amount": vat_total,
         "payable_amount": payable,
+        "taxes": taxes,
+        "other_tax_amount": round(sum(t["amount"] for t in taxes), 2),
+        **withholding,
+        "tax_detail": 1,
         "source": "XML",
         "source_file": source_file,
     }

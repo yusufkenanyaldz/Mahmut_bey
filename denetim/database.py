@@ -7,7 +7,7 @@ import pandas as pd
 
 from .utils import normalize_account, normalize_doc_no, normalize_text
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -41,6 +41,12 @@ CREATE TABLE IF NOT EXISTS invoices (
     total_amount REAL NOT NULL,      -- KDV HARİÇ net tutar (belge para biriminde)
     vat_amount REAL DEFAULT 0,       -- KDV toplamı
     payable_amount REAL,             -- Ödenecek tutar
+    other_tax_amount REAL DEFAULT 0, -- KDV dışındaki vergiler toplamı (ÖTV, ÖİV ...; ayrıntı invoice_taxes)
+    withholding_amount REAL DEFAULT 0, -- KDV tevkifatı tutarı (WithholdingTaxTotal)
+    withholding_rate REAL,           -- Tevkifat oranı (%)
+    withholding_code TEXT,           -- Tevkifat kodu (ör. 624)
+    direction TEXT,                  -- ALIS / SATIS (Excel'de açıkça verildiyse); boşsa satıcı VKN'sinden bulunur
+    tax_detail INTEGER,              -- 1: ÖTV / tevkifat ayrıştırılarak yüklendi (madde 7 öncesi kayıtlarda boş)
     source TEXT,                     -- XML / EXCEL
     source_file TEXT,
     import_id INTEGER,
@@ -59,6 +65,16 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
     unit_price_net REAL,             -- line_net / quantity
     vat_rate REAL,
     vat_amount REAL,
+    FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS invoice_taxes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL,
+    tax_code TEXT,                   -- GİB vergi türü kodu (9077 ÖTV II, 4080 ÖİV ...)
+    tax_name TEXT,
+    amount REAL,                     -- Belge para biriminde
+    percent REAL,
+    taxable_amount REAL,
     FOREIGN KEY(invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS journal_entries (
@@ -81,6 +97,7 @@ CREATE TABLE IF NOT EXISTS bulgu_inceleme (
     tarih TEXT                       -- Son değişiklik
 );
 CREATE INDEX IF NOT EXISTS ix_lines_invoice ON invoice_lines(invoice_id);
+CREATE INDEX IF NOT EXISTS ix_taxes_invoice ON invoice_taxes(invoice_id);
 CREATE INDEX IF NOT EXISTS ix_journal_doc ON journal_entries(document_no_norm);
 CREATE INDEX IF NOT EXISTS ix_invoice_no ON invoices(invoice_no_norm);
 """
@@ -110,12 +127,27 @@ class DatabaseManager:
             if self._is_legacy_schema(conn):
                 self._migrate_v1(conn)
             conn.executescript(SCHEMA)
+            self._add_missing_columns(conn)
             conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES ('schema_version', ?)",
                          (str(SCHEMA_VERSION),))
 
     @staticmethod
     def _columns(conn, table):
         return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+    # Sonradan eklenen sütunlar: önceki sürümlerle oluşturulmuş veritabanlarına ALTER TABLE ile eklenir
+    ADDED_COLUMNS = {
+        "invoices": [("other_tax_amount", "REAL DEFAULT 0"), ("withholding_amount", "REAL DEFAULT 0"),
+                     ("withholding_rate", "REAL"), ("withholding_code", "TEXT"), ("direction", "TEXT"),
+                     ("tax_detail", "INTEGER")],
+    }
+
+    def _add_missing_columns(self, conn):
+        for table, cols in self.ADDED_COLUMNS.items():
+            mevcut = self._columns(conn, table)
+            for name, decl in cols:
+                if name not in mevcut:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     def _is_legacy_schema(self, conn):
         cols = self._columns(conn, "invoices")
@@ -224,14 +256,21 @@ class DatabaseManager:
         cur = conn.execute(
             "INSERT INTO invoices (invoice_no, invoice_no_norm, issue_date, supplier_vkn, supplier_name, customer_vkn,"
             " customer_name, invoice_type, profile, currency, exchange_rate, line_extension_amount, allowance_total,"
-            " total_amount, vat_amount, payable_amount, source, source_file, import_id)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " total_amount, vat_amount, payable_amount, other_tax_amount, withholding_amount, withholding_rate,"
+            " withholding_code, direction, tax_detail, source, source_file, import_id)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (h["invoice_no"], normalize_doc_no(h["invoice_no"]), h["issue_date"], h["supplier_vkn"],
              h.get("supplier_name"), h.get("customer_vkn"), h.get("customer_name"), h.get("invoice_type"),
              h.get("profile"), h.get("currency") or "TRY", h.get("exchange_rate") or 1.0,
              h.get("line_extension_amount"), h.get("allowance_total") or 0.0, h["total_amount"],
-             h.get("vat_amount") or 0.0, h.get("payable_amount"), h.get("source"), h.get("source_file"), import_id))
+             h.get("vat_amount") or 0.0, h.get("payable_amount"), h.get("other_tax_amount") or 0.0,
+             h.get("withholding_amount") or 0.0, h.get("withholding_rate"), h.get("withholding_code"),
+             h.get("direction"), h.get("tax_detail"), h.get("source"), h.get("source_file"), import_id))
         invoice_id = cur.lastrowid
+        for t in h.get("taxes") or []:
+            conn.execute("INSERT INTO invoice_taxes (invoice_id, tax_code, tax_name, amount, percent, taxable_amount)"
+                         " VALUES (?,?,?,?,?,?)", (invoice_id, t["code"], t.get("name"), t["amount"],
+                                                   t.get("percent"), t.get("taxable")))
         for ln in lines:
             qty = ln["quantity"]
             conn.execute(
@@ -263,11 +302,17 @@ class DatabaseManager:
     def get_lines_df(self):
         query = """
             SELECT l.*, i.invoice_no, i.issue_date, i.supplier_vkn, i.supplier_name, i.currency, i.exchange_rate,
-                   i.invoice_type
+                   i.invoice_type, i.direction
             FROM invoice_lines l JOIN invoices i ON l.invoice_id = i.id
         """
         with self.connection() as conn:
             return pd.read_sql_query(query, conn)
+
+    def get_invoice_taxes_df(self):
+        """KDV dışındaki vergiler (fatura başına, vergi türü koduna göre)."""
+        with self.connection() as conn:
+            return pd.read_sql_query("SELECT invoice_id, tax_code, tax_name, amount, percent, taxable_amount "
+                                     "FROM invoice_taxes", conn)
 
     def get_journal_df(self):
         with self.connection() as conn:
@@ -286,5 +331,5 @@ class DatabaseManager:
         """Ayarlar ve bulgu inceleme kayıtları hariç tüm verileri siler (incelemeler kararlı bulgu anahtarıyla
         saklandığından veriler yeniden yüklendiğinde aynı bulgulara uygulanır)."""
         with self.connection() as conn:
-            for table in ("invoice_lines", "invoices", "journal_entries", "imports"):
+            for table in ("invoice_taxes", "invoice_lines", "invoices", "journal_entries", "imports"):
                 conn.execute(f"DELETE FROM {table}")
