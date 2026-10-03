@@ -4,12 +4,12 @@ from collections import OrderedDict
 
 import customtkinter as ctk
 import pandas as pd
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
-from denetim import checks, importers
+from denetim import checks, importers, inceleme
 from denetim.export import export_sections  # noqa: F401  (eski içe aktarımlar için app.export_sections korunur)
 from denetim.firms import FirmError, FirmRegistry
-from denetim.utils import parse_account_list, parse_number, tr_upper
+from denetim.utils import parse_account_list, parse_number
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(APP_DIR, "veri")
@@ -147,6 +147,190 @@ class ColumnMappingDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+def hucre_metni(value):
+    """Tablo hücresi: boş değerler boş, ondalıklı sayılar Türkçe biçimde (1.234,56)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    if isinstance(value, float):
+        return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return str(value)
+
+
+class BulguPaneli(ctk.CTkFrame):
+    """Bulgu tablosu (ttk.Treeview) ve inceleme işaretleme: seçili satırları "İncelendi – Sorun Yok" /
+    "Düzeltme İstendi" / "Açık" yapar, notu kaydeder. İş mantığı denetim/inceleme.py'dedir."""
+    MAX_SATIR = 5000
+    BASLIKLAR = {inceleme.DURUM_COL: "Durum", inceleme.NOT_COL: "İnceleme Notu",
+                 inceleme.TARIH_COL: "İnceleme Tarihi"}
+    DURUM_ETIKET = {inceleme.DURUM_ACIK: "acik", inceleme.DURUM_SORUN_YOK: "sorun_yok",
+                    inceleme.DURUM_DUZELTME: "duzeltme"}
+
+    def __init__(self, app, master):
+        super().__init__(master, fg_color="transparent")
+        self.app = app
+        self.sections = OrderedDict()  # İncelenebilir bulgu bölümleri (ham)
+        self.view = OrderedDict()      # İnceleme sütunları uygulanmış
+        self.anahtarlar = {}           # Treeview satır kimliği → bulgu anahtarı
+        font = app.font_label
+
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(top, text="Kontrol:", font=font).pack(side="left", padx=(0, 6))
+        self.bolum_var = ctk.StringVar(value="")
+        self.bolum_menu = ctk.CTkOptionMenu(top, values=[""], variable=self.bolum_var, width=470,
+                                            dynamic_resizing=False, command=lambda _: self.refresh())
+        self.bolum_menu.pack(side="left", padx=(0, 14))
+        self.goster_var = ctk.BooleanVar(value=app.setting("inceleme_sorun_yok_goster", "0") == "1")
+        ctk.CTkCheckBox(top, text="Sorun yok olanları göster", variable=self.goster_var, font=font,
+                        command=self.on_toggle_goster).pack(side="left", padx=(0, 14))
+        self.info_label = ctk.CTkLabel(top, text="", font=font, text_color=("gray30", "gray70"), anchor="w")
+        self.info_label.pack(side="left", fill="x", expand=True)
+
+        table = ctk.CTkFrame(self, fg_color=("white", "#18181a"), corner_radius=8, border_width=1,
+                             border_color=("gray75", "#3c3c3c"))
+        table.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(table, style="Bulgu.Treeview", show="headings", selectmode="extended", height=4)
+        vsb = ctk.CTkScrollbar(table, orientation="vertical", command=self.tree.yview)
+        hsb = ctk.CTkScrollbar(table, orientation="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew", padx=(4, 0), pady=(4, 0))
+        vsb.grid(row=0, column=1, sticky="ns", pady=(4, 0))
+        hsb.grid(row=1, column=0, sticky="ew", padx=(4, 0), pady=(0, 2))
+        table.grid_rowconfigure(0, weight=1)
+        table.grid_columnconfigure(0, weight=1)
+        self.tree.bind("<<TreeviewSelect>>", self.on_select)
+        self.tree.bind("<Control-a>", lambda e: (self.select_all(), "break")[1])
+
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.pack(fill="x", pady=(8, 0))
+        ctk.CTkLabel(bottom, text="Not:", font=font).pack(side="left", padx=(0, 6))
+        self.not_entry = ctk.CTkEntry(bottom, width=260, placeholder_text="seçili bulgulara yazılır")
+        self.not_entry.pack(side="left", padx=(0, 10))
+        small = dict(height=32, font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"))
+        ctk.CTkButton(bottom, text="✔ İncelendi – Sorun Yok", fg_color=("#388e3c", "#2e7d32"),
+                      hover_color=("#2e7d32", "#1b5e20"), command=lambda: self.mark(inceleme.DURUM_SORUN_YOK),
+                      **small).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bottom, text="✎ Düzeltme İstendi", fg_color=("#d4a000", "#b58900"),
+                      hover_color=("#b58900", "#856500"), command=lambda: self.mark(inceleme.DURUM_DUZELTME),
+                      **small).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bottom, text="↺ Açığa Al", fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"),
+                      command=lambda: self.mark(inceleme.DURUM_ACIK), width=100, **small).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bottom, text="Tümünü Seç", fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"),
+                      command=self.select_all, width=100, **small).pack(side="left", padx=(0, 6))
+        self.sel_label = ctk.CTkLabel(bottom, text="", font=font, text_color=("gray30", "gray70"))
+        self.sel_label.pack(side="left", padx=(6, 0))
+        app.apply_tree_style()
+
+    # ------------------------------------------------------------------ veri
+    def set_sections(self, sections):
+        """Rapor sonuçlarını yükler; yalnızca incelenebilir bulgu bölümleri tabloda gösterilir."""
+        self.sections = OrderedDict((t, df) for t, df in (sections or {}).items()
+                                    if inceleme.kontrol_kodu(t) is not None and df is not None)
+        secili = self.bolum_basligi()
+        self.reload()
+        if secili not in self.sections:  # İlk açık bulgusu olan bölüm seçilir
+            secili = next((t for t, df in self.view.items() if (df[inceleme.DURUM_COL] == inceleme.DURUM_ACIK).any()),
+                          next(iter(self.sections), ""))
+        self.set_bolum(secili)
+
+    def reload(self):
+        """İnceleme kayıtlarını veritabanından yeniden okuyup bölümlere uygular, menü etiketlerini günceller."""
+        self.view = inceleme.bolumlere_uygula(self.sections, inceleme.incelemeleri_oku(self.app.db))
+        ozet = inceleme.inceleme_ozeti(self.view).set_index("Kontrol")
+        self.etiketler = OrderedDict(
+            (f"{t}  —  {inceleme.ozet_satiri(ozet.loc[t])}" if t in ozet.index else t, t) for t in self.view)
+        self.bolum_menu.configure(values=list(self.etiketler) or [""])
+
+    def bolum_basligi(self):
+        return getattr(self, "etiketler", {}).get(self.bolum_var.get(), "")
+
+    def set_bolum(self, baslik):
+        etiket = next((e for e, t in self.etiketler.items() if t == baslik), "")
+        self.bolum_var.set(etiket)
+        self.refresh()
+
+    def export_sections(self, sections):
+        """Excel çıktısı: bulgu bölümlerine durum / not / tarih sütunları ve baştaki özetin ardına İnceleme Özeti."""
+        if not sections:
+            return sections
+        view = inceleme.bolumlere_uygula(sections, inceleme.incelemeleri_oku(self.app.db))
+        items = list(view.items())
+        pos = 1 if items and items[0][0] == "Özet" else 0
+        items.insert(pos, ("İnceleme Özeti", inceleme.inceleme_ozeti(view)))
+        return OrderedDict(items)
+
+    # ------------------------------------------------------------------ görünüm
+    def refresh(self):
+        tree = self.tree
+        tree.delete(*tree.get_children())
+        self.anahtarlar = {}
+        baslik = self.bolum_basligi()
+        df = self.view.get(baslik)
+        if df is None:
+            tree["columns"] = ()
+            self.info_label.configure(text="Bulgu yok. Kontrolü çalıştırın." if not self.sections else "")
+            self.update_sel_label()
+            return
+        gorunen = df if self.goster_var.get() else inceleme.sorun_yok_gizle(df)
+        gizli = len(df) - len(gorunen)
+        veri_cols = [c for c in df.columns if c not in inceleme.INCELEME_COLS]
+        cols = [inceleme.DURUM_COL] + veri_cols + [inceleme.NOT_COL, inceleme.TARIH_COL]
+        tree["columns"] = cols
+        ornek = gorunen.head(200)
+        yazi, kalin = tkfont.Font(font=self.app.tree_font), tkfont.Font(font=self.app.tree_heading_font)
+        for c in cols:
+            baslik_metni = self.BASLIKLAR.get(c, c.replace("_", " "))
+            en_uzun = max([hucre_metni(v) for v in ornek[c]] + [""], key=len)
+            genislik = max(kalin.measure(baslik_metni), yazi.measure(en_uzun)) + 24
+            tree.heading(c, text=baslik_metni, anchor="w")
+            tree.column(c, width=max(70, min(360, genislik)), minwidth=50, stretch=False, anchor="w")
+        for i, (_, r) in enumerate(gorunen.head(self.MAX_SATIR).iterrows()):
+            iid = str(i)
+            self.anahtarlar[iid] = r[inceleme.ANAHTAR_COL]
+            tree.insert("", "end", iid=iid, values=[hucre_metni(r[c]) for c in cols],
+                        tags=(self.DURUM_ETIKET.get(r[inceleme.DURUM_COL], "acik"),))
+        text = f"{len(gorunen)} bulgu gösteriliyor"
+        if gizli:
+            text += f" ({gizli} 'sorun yok' gizli)"
+        if len(gorunen) > self.MAX_SATIR:
+            text += f" — ilk {self.MAX_SATIR} satır; tamamı için Excel'e aktarın"
+        self.info_label.configure(text=text)
+        self.update_sel_label()
+
+    def update_sel_label(self):
+        n = len(self.tree.selection())
+        self.sel_label.configure(text=f"{n} seçili" if n else "")
+
+    def on_toggle_goster(self):
+        self.app.db.set_setting("inceleme_sorun_yok_goster", "1" if self.goster_var.get() else "0")
+        self.refresh()
+
+    def on_select(self, _event=None):
+        sec = self.tree.selection()
+        if len(sec) == 1:  # Tek satır seçilince mevcut not düzenlemek için kutuya gelir
+            df = self.view.get(self.bolum_basligi())
+            notlar = df.loc[df[inceleme.ANAHTAR_COL] == self.anahtarlar.get(sec[0]), inceleme.NOT_COL]
+            self.not_entry.delete(0, "end")
+            if len(notlar) and notlar.iloc[0]:
+                self.not_entry.insert(0, notlar.iloc[0])
+        self.update_sel_label()
+
+    def select_all(self):
+        self.tree.selection_set(self.tree.get_children())
+
+    def mark(self, durum):
+        sec = self.tree.selection()
+        if not sec:
+            messagebox.showwarning("Uyarı", "Önce tablodan bir veya daha fazla bulgu seçin.")
+            return
+        not_ = self.not_entry.get().strip()
+        n = inceleme.isaretle(self.app.db, [self.anahtarlar[i] for i in sec], durum, not_ or None)
+        baslik = self.bolum_basligi()
+        self.reload()
+        self.set_bolum(baslik)
+        self.info_label.configure(text=f"{n} bulgu '{durum}' olarak işaretlendi.  " + self.info_label.cget("text"))
+
+
 # --- ARAYÜZ (GUI) - AYDINLIK/KARANLIK MOD DESTEKLİ ---
 class AuditApp(ctk.CTk):
     def __init__(self, data_dir=DATA_DIR, legacy_dirs=None):
@@ -159,7 +343,7 @@ class AuditApp(ctk.CTk):
         self.recon_sections = None
         self.audit_sections = None
         self.recon_haric = self.audit_haric = None
-        self.analysis_result = self.audit_fiyat_haric = None
+        self.analysis_result = self.audit_fiyat_haric = self.recon_kur = self.audit_kur_farki = None
 
         self.title(APP_TITLE)
         self.geometry("1280x800")
@@ -175,6 +359,8 @@ class AuditApp(ctk.CTk):
         self.font_btn = ctk.CTkFont(family="Segoe UI", size=14, weight="bold")
         self.font_label = ctk.CTkFont(family="Segoe UI", size=13)
         self.font_console = ctk.CTkFont(family="Consolas", size=13)
+        self.tree_font = ("Segoe UI", 10)
+        self.tree_heading_font = ("Segoe UI", 10, "bold")
 
         self.create_sidebar()
         self.create_main_frame()
@@ -218,14 +404,14 @@ class AuditApp(ctk.CTk):
         self.firm, self.db = self.registry.get(code), db
         self.registry.set_last_firm(self.firm.code)
         self.analysis_df = self.recon_sections = self.audit_sections = self.recon_haric = self.audit_haric = None
-        self.analysis_result = self.audit_fiyat_haric = None
+        self.analysis_result = self.audit_fiyat_haric = self.recon_kur = self.audit_kur_farki = None
         self.refresh_firm_display()
         self.show_welcome_screen()
 
     def close_firm(self):
         self.firm = self.db = None
         self.analysis_df = self.recon_sections = self.audit_sections = self.recon_haric = self.audit_haric = None
-        self.analysis_result = self.audit_fiyat_haric = None
+        self.analysis_result = self.audit_fiyat_haric = self.recon_kur = self.audit_kur_farki = None
         self.refresh_firm_display()
 
     def refresh_firm_display(self):
@@ -264,6 +450,30 @@ class AuditApp(ctk.CTk):
             return None
         self.db.set_setting("tolerance", f"{value:g}")
         return value
+
+    def read_kur_toleransi(self, entry):
+        """Dövizli faturalar için yüzde kur toleransı (firma ayarı; 0 → kapalı)."""
+        try:
+            value = parse_number(entry.get())
+        except ValueError:
+            value = None
+        if value is None or value < 0 or value >= 100:
+            messagebox.showwarning("Uyarı", "Kur toleransı 0 ile 100 arasında bir yüzde olmalıdır (ör. "
+                                            f"{checks.KUR_TOLERANSI_VARSAYILAN:g}; 0 → yüzde tolerans yok).")
+            return None
+        self.db.set_setting("kur_toleransi", f"{value:g}")
+        return value
+
+    def add_tolerans_row(self):
+        """Tutar toleransları satırı: TL faturalar için sabit TL, dövizli faturalar için yüzde kur toleransı.
+        Dönüş: (TL tolerans kutusu, kur toleransı kutusu)"""
+        row = self.create_button_row()
+        tl = self.add_labeled_entry(row, "Tolerans (TL):", self.setting("tolerance", "0.01"), 70)
+        kur = self.add_labeled_entry(row, "Kur Toleransı (%, dövizli faturalar):",
+                                     self.setting("kur_toleransi", f"{checks.KUR_TOLERANSI_VARSAYILAN:g}"), 55)
+        ctk.CTkLabel(row, text="(TL faturalara yüzde uygulanmaz)", font=self.font_label,
+                     text_color=("gray35", "gray60"), anchor="w").pack(side="left")
+        return tl, kur
 
     def read_accounts(self, entry):
         accounts = parse_account_list(entry.get())
@@ -430,6 +640,27 @@ class AuditApp(ctk.CTk):
         else:
             ctk.set_appearance_mode("Light")
             self.mode_switch.configure(text="Aydınlık Mod")
+        self.apply_tree_style()
+
+    def apply_tree_style(self):
+        """Bulgu tablosunun (ttk.Treeview) renklerini aydınlık / karanlık moda uyarlar."""
+        dark = ctk.get_appearance_mode() == "Dark"
+        bg, fg, head_bg, sel = ("#18181a", "#d4d4d4", "#2a2a2e", "#1f538d") if dark else \
+            ("white", "black", "gray85", "#3a7ebf")
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        style.configure("Bulgu.Treeview", background=bg, fieldbackground=bg, foreground=fg, rowheight=24,
+                        borderwidth=0, font=self.tree_font)
+        style.configure("Bulgu.Treeview.Heading", background=head_bg, foreground=fg, relief="flat",
+                        font=self.tree_heading_font)
+        style.map("Bulgu.Treeview", background=[("selected", sel)], foreground=[("selected", "white")])
+        style.layout("Bulgu.Treeview", [("Bulgu.Treeview.treearea", {"sticky": "nswe"})])  # Kenarlık yok
+        style.map("Bulgu.Treeview.Heading", background=[("active", "#3a7ebf" if dark else "gray75")])
+        for panel in (getattr(self, "bulgu_paneli", None),):
+            if panel is not None and panel.winfo_exists():
+                panel.tree.tag_configure("sorun_yok", foreground="#7f8c8d" if dark else "gray45")
+                panel.tree.tag_configure("duzeltme", foreground="#e5a50a" if dark else "#a66f00")
+                panel.tree.tag_configure("acik", foreground=fg)
 
     def create_main_frame(self):
         self.main_frame = ctk.CTkFrame(self, corner_radius=12, fg_color=("gray95", "#242427"))
@@ -476,16 +707,50 @@ class AuditApp(ctk.CTk):
                           command=lambda v: self.db.set_setting("period_type", v)).pack(side="left", padx=(0, 18))
         return var
 
-    def create_console_box(self):
-        box = ctk.CTkTextbox(self.main_frame, font=self.font_console, corner_radius=8, wrap="none",
+    def create_console_box(self, parent=None, padx=40, pady=(10, 30)):
+        box = ctk.CTkTextbox(parent or self.main_frame, font=self.font_console, corner_radius=8, wrap="none",
                              border_width=1, border_color=("gray75", "#3c3c3c"),
                              fg_color=("white", "#18181a"), text_color=("black", "#d4d4d4"))
-        box.pack(fill="both", expand=True, padx=40, pady=(10, 30))
+        box.pack(fill="both", expand=True, padx=padx, pady=pady)
         box.tag_config("hata", foreground="#e5534b")
         box.tag_config("uyari", foreground="#d4a000")
         box.tag_config("ok", foreground="#3fb950")
         box.tag_config("baslik", foreground="#3a7ebf")
         return box
+
+    def create_results_area(self):
+        """Sonuç alanı: "Bulgular" sekmesinde inceleme işaretlenebilen tablo, "Özet (metin)" sekmesinde konsol.
+        Dönüş: (BulguPaneli, konsol kutusu)"""
+        tabs = ctk.CTkTabview(self.main_frame, corner_radius=8, height=240)
+        tabs.pack(fill="both", expand=True, padx=40, pady=(4, 20))
+        tabs.add("Bulgular")
+        tabs.add("Özet (metin)")
+        self.results_tabs = tabs
+        self.bulgu_paneli = BulguPaneli(self, tabs.tab("Bulgular"))
+        self.bulgu_paneli.pack(fill="both", expand=True)
+        self.apply_tree_style()
+        box = self.create_console_box(tabs.tab("Özet (metin)"), padx=0, pady=0)
+        return self.bulgu_paneli, box
+
+    def show_results(self, sections):
+        """Bulgu tablosunu doldurur; bulgu bölümü yoksa (veri yok uyarısı) metin özetine geçer.
+
+        Not: CTkTabview.set() diğer sekmeleri 100 ms sonra gizler; art arda iki set() çağrısı yapılmamalıdır."""
+        self.bulgu_paneli.set_sections(sections)
+        self.apply_tree_style()
+        hedef = "Bulgular" if self.bulgu_paneli.sections else "Özet (metin)"
+        if self.results_tabs.get() != hedef:
+            self.results_tabs.set(hedef)
+
+    def log_review_summary(self, box, sections):
+        """Her kontrol için bulgu ve inceleme (açık / sorun yok / düzeltme istendi) sayıları."""
+        view = inceleme.bolumlere_uygula(sections, inceleme.incelemeleri_oku(self.db))
+        ozet = inceleme.inceleme_ozeti(view)
+        self.log(box, "ÖZET (bulgu sayısı — inceleme durumu)", "baslik")
+        for _, r in ozet.iterrows():
+            tag = "ok" if r["Acik"] == 0 and r["Duzeltme_Istendi"] == 0 else ("hata" if r["Acik"] else "uyari")
+            self.log(box, f"  {'✔' if tag == 'ok' else '✖'} {r['Kontrol']}: {r['Bulgu_Sayisi']}  "
+                          f"({inceleme.ozet_satiri(r)})", tag)
 
     def log(self, box, text, tag=None):
         box.insert("end", text + "\n", tag)
@@ -897,7 +1162,7 @@ class AuditApp(ctk.CTk):
         self.add_button(row, "▶ Analizi Çalıştır", self.run_analysis)
         self.add_button(row, "📥 Excel'e Aktar", self.export_to_excel,
                         fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
-        self.result_box = self.create_console_box()
+        self.analysis_panel, self.result_box = self.create_results_area()
         self.log(self.result_box, "> Rapor bekleniyor...")
 
     def run_analysis(self):
@@ -914,17 +1179,20 @@ class AuditApp(ctk.CTk):
         self.analysis_df = res.satirlar
         if res.ozet["toplam"] == 0:
             self.analysis_df = self.analysis_result = None
+            self.show_results({})
             return self.log(box, "[BİLGİ] Analiz edilecek fatura satırı bulunamadı.", "uyari")
         self.log(box, f"> {checks.fiyat_ozeti_metni(res.ozet)}\n")
+        sections = OrderedDict([(f"Fiyat Anomalileri (±%{threshold:g})", res.riskli)])
+        self.log_review_summary(box, sections)
+        self.log(box, "  Riskli satırlar 'Bulgular' sekmesinde; inceleme durumu orada işaretlenir.\n")
         cols = ["Donem", "Fatura_No", "Tedarikci", "Urun_Adi", "Birim", "Para_Birimi", "Miktar", "Birim_Fiyat",
                 "Birim_Fiyat_TL", "AOBF", "Fark_Yuzdesi"]
-        self.log_section(box, f"RİSKLİ FATURA SATIRLARI ({self.period_var.get()} dönem, ±%{threshold:g} sapma)",
-                         res.riskli[cols])
         bilgi = res.satirlar[res.satirlar["Risk_Durumu"] == checks.RISK_YETERSIZ]
         if not bilgi.empty:
             self.log_section(box, "BİLGİ: EŞİK ÜSTÜ AMA YETERSİZ VERİ (RİSKLİ SAYILMADI)",
                              bilgi[cols + ["Donemdeki_Alim_Sayisi"]])
         self.log(box, f"Toplam {len(res.satirlar)} satır incelendi, {len(res.riskli)} satır riskli.")
+        self.show_results(sections)
 
     def export_to_excel(self):
         if self.analysis_result is None:
@@ -934,9 +1202,12 @@ class AuditApp(ctk.CTk):
                                                  title="Excel Olarak Kaydet", filetypes=[("Excel Dosyası", "*.xlsx")])
         if file_path:
             res = self.analysis_result
+            riskli = inceleme.durum_uygula("Fiyat Anomalileri", res.riskli, inceleme.incelemeleri_oku(self.db))
             self._export(file_path, self.with_fiyat_haric_sheet(
-                OrderedDict([("Fiyat Analizi Özeti", checks.fiyat_ozeti_df(res.ozet)), ("Riskli Satırlar", res.riskli),
-                             ("Tüm Satırlar", res.satirlar)]), res.haric, self.analysis_rules))
+                OrderedDict([("Fiyat Analizi Özeti", checks.fiyat_ozeti_df(res.ozet)),
+                             ("İnceleme Özeti", inceleme.inceleme_ozeti({"Fiyat Anomalileri": riskli})),
+                             ("Riskli Satırlar", riskli), ("Tüm Satırlar", res.satirlar)]), res.haric,
+                self.analysis_rules))
 
     def _export(self, file_path, sections):
         try:
@@ -961,23 +1232,25 @@ class AuditApp(ctk.CTk):
         opts = self.create_button_row()
         self.accounts_entry = self.add_labeled_entry(opts, "Hesap Kodları:", self.setting("accounts", ""), 220,
                                                      "ör. 153, 770")
-        self.tolerance_entry = self.add_labeled_entry(opts, "Tolerans (TL):", self.setting("tolerance", "0.01"), 80)
         self.recon_period_var = self.add_period_menu(opts)
+        self.tolerance_entry, self.recon_kur_entry = self.add_tolerans_row()
         self.recon_onek_entry, self.recon_haric_var = self.add_haric_onek_row()
         row = self.create_button_row()
         self.add_button(row, "▶ Mutabakat Kontrolü Yap", self.run_reconciliation,
                         fg_color=("#e83e8f", "#d33682"), hover_color=("#d33682", "#a32a65"))
         self.add_button(row, "📥 Excel'e Aktar", lambda: self.export_sections_dialog(
-            self.with_haric_sheet(self.recon_sections, self.recon_haric, self.recon_haric_var),
+            self.recon_panel.export_sections(self.with_kur_sheet(
+                self.with_haric_sheet(self.recon_sections, self.recon_haric, self.recon_haric_var), self.recon_kur)),
             "Mutabakat_Raporu.xlsx"),
                         fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
-        self.recon_box = self.create_console_box()
+        self.recon_panel, self.recon_box = self.create_results_area()
         self.log(self.recon_box, "> Mutabakat bekleniyor...")
 
     def run_reconciliation(self):
         accounts = self.read_accounts(self.accounts_entry)
         tolerance = self.read_tolerance(self.tolerance_entry)
-        if accounts is None or tolerance is None:
+        kur = self.read_kur_toleransi(self.recon_kur_entry) if tolerance is not None else None
+        if accounts is None or kur is None:
             return
         box = self.recon_box
         box.delete("1.0", "end")
@@ -985,22 +1258,32 @@ class AuditApp(ctk.CTk):
         self.update()
         invoices, journal = self.db.get_invoices_df(), self.db.get_journal_df()
         if invoices.empty or journal.empty:
-            self.recon_sections = self.recon_haric = None
+            self.recon_sections = self.recon_haric = self.recon_kur = None
+            self.show_results({})
             self.log(box, "[UYARI] İşlem yapılamadı. Hem Fatura hem de Yevmiye kayıtlarının yüklü olduğundan "
                           "emin olun.", "uyari")
             return
         onekler = self.read_haric_onekler(self.recon_onek_entry)
-        res = checks.reconcile(invoices, journal, accounts, tolerance, self.recon_period_var.get(), onekler)
+        res = checks.reconcile(invoices, journal, accounts, tolerance, self.recon_period_var.get(), onekler, kur)
         self.recon_sections = OrderedDict([("Eşleşme Özeti", checks.eslesme_ozeti_df(res.eslesme_ozeti)),
                                            ("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(res.faturasiz_ozeti))]
                                           + list(res.items()))
-        self.recon_haric = res.faturasiz_haric
-        self.log(box, f"> Hesaplar: {', '.join(accounts)}  |  Tolerans: {tolerance:g} TL")
+        self.recon_haric, self.recon_kur = res.faturasiz_haric, res.kur_farki
+        self.log(box, f"> Hesaplar: {', '.join(accounts)}  |  Tolerans: {tolerance:g} TL  |  Kur toleransı "
+                      f"(dövizli): %{kur:g}")
         self.log(box, f"> {checks.eslesme_ozeti_metni(res.eslesme_ozeti)}")
-        self.log(box, f"> {checks.faturasiz_ozeti_metni(res.faturasiz_ozeti)}\n",
+        self.log(box, f"> {checks.faturasiz_ozeti_metni(res.faturasiz_ozeti)}",
                  None if res.faturasiz_ozeti["isaretli"] else "uyari")
-        for title, df in res.items():
-            self.log_section(box, tr_upper(title), df)
+        self.log(box, f"> {checks.kur_ozeti_metni(res.kur_ozeti)}\n")
+        self.log_review_summary(box, res)
+        self.show_results(res)
+
+    @staticmethod
+    def with_kur_sheet(sections, kur_farki):
+        """Excel çıktısına yüzde kur toleransı içinde kalan dövizli faturaların bilgi sayfasını ekler."""
+        if not sections or kur_farki is None:
+            return sections
+        return OrderedDict(list(sections.items()) + [("Kur Farkı (Tolerans İçi)", kur_farki)])
 
     def export_sections_dialog(self, sections, default_name):
         if not sections:
@@ -1024,25 +1307,26 @@ class AuditApp(ctk.CTk):
         self.audit_threshold = self.add_labeled_entry(opts, "Sapma Eşiği (%):", self.setting("threshold", "15"), 70)
         self.audit_accounts = self.add_labeled_entry(opts, "Hesap Kodları:", self.setting("accounts", ""), 180,
                                                      "ör. 153, 770")
-        self.audit_tolerance = self.add_labeled_entry(opts, "Tolerans (TL):", self.setting("tolerance", "0.01"), 70)
+        self.audit_tolerance, self.audit_kur = self.add_tolerans_row()
         self.audit_rules = self.add_fiyat_kural_rows()
         self.audit_onek_entry, self.audit_haric_var = self.add_haric_onek_row()
         row = self.create_button_row()
         self.add_button(row, "▶ Tüm Kontrolleri Çalıştır", self.run_full_audit,
                         fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
         self.add_button(row, "📥 Raporu Excel'e Aktar", lambda: self.export_sections_dialog(
-            self.with_fiyat_haric_sheet(
-                self.with_haric_sheet(self.audit_sections, self.audit_haric, self.audit_haric_var),
-                self.audit_fiyat_haric, self.audit_rules),
+            self.audit_panel.export_sections(self.with_fiyat_haric_sheet(
+                self.with_kur_sheet(self.with_haric_sheet(self.audit_sections, self.audit_haric, self.audit_haric_var),
+                                    self.audit_kur_farki),
+                self.audit_fiyat_haric, self.audit_rules)),
             "Denetim_Raporu.xlsx"))
-        self.audit_box = self.create_console_box()
+        self.audit_panel, self.audit_box = self.create_results_area()
         self.log(self.audit_box, "> Rapor bekleniyor...")
 
     def run_full_audit(self):
         threshold = self.read_threshold(self.audit_threshold)
         tolerance = self.read_tolerance(self.audit_tolerance)
-        kurallar = self.read_fiyat_kurallari(self.audit_rules) if threshold is not None and tolerance is not None \
-            else None
+        kur = self.read_kur_toleransi(self.audit_kur) if threshold is not None and tolerance is not None else None
+        kurallar = self.read_fiyat_kurallari(self.audit_rules) if kur is not None else None
         if kurallar is None:
             return
         accounts = parse_account_list(self.audit_accounts.get())
@@ -1053,11 +1337,14 @@ class AuditApp(ctk.CTk):
         self.log(box, "> Tüm kontroller çalıştırılıyor...")
         self.update()
         summary, sections, notes, counts = checks.run_full_audit(
-            self.db, self.audit_period_var.get(), threshold, accounts, tolerance, self.firm.vkn, onekler, kurallar)
+            self.db, self.audit_period_var.get(), threshold, accounts, tolerance, self.firm.vkn, onekler, kurallar,
+            kur)
         self.audit_haric = counts["faturasiz_haric"]
         self.audit_fiyat_haric = counts["fiyat_haric"]
+        self.audit_kur_farki = counts["kur_farki"]
         if counts["fatura"] == 0:
             self.audit_sections = None
+            self.show_results({})
             self.log(box, "[BİLGİ] Veritabanında fatura bulunamadı.", "uyari")
             return
         head = [("Özet", summary), ("Fiyat Analizi Özeti", checks.fiyat_ozeti_df(counts["fiyat_ozeti"]))]
@@ -1070,17 +1357,12 @@ class AuditApp(ctk.CTk):
         if counts["eslesme"]:
             self.log(box, f"> {checks.eslesme_ozeti_metni(counts['eslesme'])}")
             self.log(box, f"> {checks.faturasiz_ozeti_metni(counts['faturasiz_ozeti'])}")
+            self.log(box, f"> {checks.kur_ozeti_metni(counts['kur_ozeti'])}")
         self.log(box, "")
-        self.log(box, "ÖZET", "baslik")
-        for _, r in summary.iterrows():
-            tag = "ok" if r["Bulgu_Sayisi"] == 0 else "hata"
-            self.log(box, f"  {'✔' if r['Bulgu_Sayisi'] == 0 else '✖'} {r['Kontrol']}: {r['Bulgu_Sayisi']}", tag)
+        self.log_review_summary(box, sections)
         for note in notes:
             self.log(box, f"  ! {note}", "uyari")
-        self.log(box, "")
-        for title, df in sections.items():
-            if not df.empty:
-                self.log_section(box, tr_upper(title), df)
+        self.show_results(sections)
 
     # ------------------------------------------------------------------ AYARLAR
     @requires_firm
@@ -1127,7 +1409,7 @@ class AuditApp(ctk.CTk):
             return
         self.db.clear_data()
         self.analysis_df = self.recon_sections = self.audit_sections = self.recon_haric = self.audit_haric = None
-        self.analysis_result = self.audit_fiyat_haric = None
+        self.analysis_result = self.audit_fiyat_haric = self.recon_kur = self.audit_kur_farki = None
         messagebox.showinfo("Tamam", "Veriler silindi.")
         self.show_settings_frame()
 

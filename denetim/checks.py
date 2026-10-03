@@ -10,6 +10,10 @@ import pandas as pd
 from .utils import normalize_uom, normalize_vkn, period_of, tr_ascii_upper
 
 TOLERANCE_DEFAULT = 0.01
+# Dövizli (TRY dışı) faturalarda muhasebe fatura kuru yerine başka günün kurunu kullanabilir; TL tutarın bu
+# yüzdesine kadar olan fark tutar farkı sayılmaz (firma başına değiştirilebilir). TL faturalara uygulanmaz:
+# rakam yer değiştirme hataları (12.345,67 → 12.354,67) yalnızca birkaç TL fark yaratır.
+KUR_TOLERANSI_VARSAYILAN = 1.0
 
 
 # ---------------------------------------------------------------------- fiyat analizi
@@ -402,13 +406,17 @@ def _tarih(value):
 
 class MutabakatSonucu(OrderedDict):
     """reconcile() sonucu: OrderedDict(başlık → DataFrame) + eslesme_ozeti (kategori → fatura sayısı),
-    faturasiz_ozeti (bkz. faturasiz_kayitlari_ayir) ve faturasiz_haric (listeye alınmayan belgeler)."""
+    faturasiz_ozeti (bkz. faturasiz_kayitlari_ayir), faturasiz_haric (listeye alınmayan belgeler), kur_ozeti
+    (bkz. kur_farki_ayir) ve kur_farki (yüzde kur toleransı içinde kaldığı için tutar farkı sayılmayan dövizli
+    faturalar, bilgi)."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.eslesme_ozeti = OrderedDict()
         self.faturasiz_ozeti = {}
         self.faturasiz_haric = pd.DataFrame(columns=HARIC_COLS)
+        self.kur_ozeti = {}
+        self.kur_farki = pd.DataFrame(columns=KUR_FARKI_COLS)
 
 
 _OZET_ACIKLAMA = OrderedDict([
@@ -574,8 +582,53 @@ def faturasiz_ozeti_df(ozet):
     return pd.DataFrame(rows, columns=cols)
 
 
+# ---------------------------------------------------------------------- kur farkı toleransı
+TUTAR_FARKI_COLS = ["Fatura_No", "Fatura_Tarihi", "Tedarikci", "Tedarikci_VKN", "KDV_Haric_Tutar_TL",
+                    "Yevmiye_Tutari_TL", "Fark_TL", "Dovizli", "Para_Birimi", "Kur", "Hesaplar", "Yevmiye_Belge_No",
+                    "Eslesme_Yontemi"]
+KUR_FARKI_COLS = ["Fatura_No", "Fatura_Tarihi", "Tedarikci", "Tedarikci_VKN", "Para_Birimi", "Kur",
+                  "KDV_Haric_Tutar_TL", "Yevmiye_Tutari_TL", "Fark_TL", "Fark_Yuzdesi", "Yevmiye_Belge_No"]
+
+
+def izin_verilen_fark(tutar_tl, dovizli, tolerance=TOLERANCE_DEFAULT, kur_toleransi=KUR_TOLERANSI_VARSAYILAN):
+    """Tutar farkı sayılmayacak en büyük fark (TL).
+
+    TL faturada sabit TL toleransı; dövizli faturada max(TL toleransı, kur_toleransi % × TL tutar).
+    """
+    if not dovizli or not kur_toleransi:
+        return tolerance
+    return max(tolerance, abs(float(tutar_tl or 0)) * float(kur_toleransi) / 100)
+
+
+def kur_farki_ayir(eslesen, tolerance=TOLERANCE_DEFAULT, kur_toleransi=KUR_TOLERANSI_VARSAYILAN):
+    """Eşleşen faturaları (Fark sütunu TL tolerans üstü olanlar) tutar farkı ve tolerans içi kur farkı olarak ayırır.
+
+    eslesen: reconcile() içindeki eşleşen faturalar (net_tl, Fark, Para_Birimi sütunlarıyla)
+    Dönüş: (tutar farkı satırları, kur farkı (tolerans içi) satırları, özet dict)
+    """
+    fark = eslesen[eslesen["Fark"].abs() > tolerance]
+    dovizli = fark["Para_Birimi"] != "TRY"
+    sinir = [izin_verilen_fark(t, d, tolerance, kur_toleransi) for t, d in zip(fark["net_tl"], dovizli)]
+    icinde = dovizli & (fark["Fark"].abs() <= pd.Series(sinir, index=fark.index, dtype=float) + 0.005)
+    ozet = {"kur_toleransi": float(kur_toleransi or 0), "dovizli_fatura": int((eslesen["Para_Birimi"] != "TRY").sum()),
+            "tolerans_ici": int(icinde.sum()), "asan": int((dovizli & ~icinde).sum())}
+    return fark[~icinde], fark[icinde], ozet
+
+
+def kur_ozeti_metni(ozet):
+    """Kur farkı toleransının özetini tek satırlık metne çevirir."""
+    if not ozet:
+        return ""
+    if not ozet["kur_toleransi"]:
+        return f"Kur farkı toleransı kapalı (%0): {ozet['asan']} dövizli fatura tutar farklarında"
+    return (f"Kur farkı (tolerans içi, ±%{ozet['kur_toleransi']:g}, bilgi): {ozet['tolerans_ici']} dövizli fatura "
+            f"tutar farkı sayılmadı | Toleransı aşan dövizli fark: {ozet['asan']} "
+            f"(dövizli eşleşen fatura: {ozet['dovizli_fatura']})")
+
+
 # ---------------------------------------------------------------------- mutabakat
-def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_type="Aylık", haric_onekler=None):
+def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_type="Aylık", haric_onekler=None,
+              kur_toleransi=KUR_TOLERANSI_VARSAYILAN):
     """Faturaları (KDV hariç, TL) seçili hesap kodlarındaki yevmiye kayıtlarıyla karşılaştırır.
 
     accounts: normalize edilmiş hesap kodu önekleri listesi (ör. ['153', '770']).
@@ -586,6 +639,9 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
     Seçili hesap dışı kontrolü 3. kademeden önce (tam + seri/sıra ile) yapılır.
     Eşleşmeyen belgeler faturasiz_kayitlari_ayir() ile süzülür (haric_onekler: parse_onek_listesi() çıktısı,
     None → varsayılan önekler).
+    Tutar farkı: TL faturada fark > tolerance (TL); dövizli faturada fark > max(tolerance, kur_toleransi % × TL tutar).
+    Dövizli faturalarda bu yüzde içinde kalan farklar tutar farkı sayılmaz, .kur_farki / .kur_ozeti'de bilgi olarak
+    raporlanır (kur_toleransi=0 → yüzde tolerans yok).
     Dönüş: MutabakatSonucu (OrderedDict başlık → DataFrame, .eslesme_ozeti, .faturasiz_ozeti, .faturasiz_haric)
     """
     res = MutabakatSonucu()
@@ -595,7 +651,11 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
     inv = invoices.copy()
     if inv.empty:
         inv = pd.DataFrame(columns=["invoice_no", "invoice_no_norm", "issue_date", "supplier_vkn", "supplier_name",
-                                    "total_amount", "exchange_rate", "invoice_type"])
+                                    "total_amount", "exchange_rate", "invoice_type", "currency"])
+    if "currency" not in inv:
+        inv["currency"] = "TRY"
+    inv["Para_Birimi"] = inv["currency"].map(para_birimi).astype(object)
+    inv["Kur"] = inv["exchange_rate"].fillna(1.0).astype(float)
     inv["net_tl"] = (inv["total_amount"].astype(float) * inv["exchange_rate"].fillna(1.0).astype(float)).round(2)
 
     jou = journal.copy()
@@ -681,10 +741,15 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
     matched["Eslesme_Yontemi"] = pd.Series([eslesme[i][1] for i in matched.index], index=matched.index, dtype=object)
     matched = matched.merge(sel_grp, on="document_no_norm", how="left")
     matched["Fark"] = (matched["Yevmiye_Tutari"].abs() - matched["net_tl"].abs()).round(2)
-    diff = matched[matched["Fark"].abs() > tolerance]
-    res["Tutar Farkları"] = diff.rename(columns=base_cols)[
-        list(base_cols.values()) + ["Yevmiye_Tutari", "Fark", "Hesaplar", "Yevmiye_Belge_No", "Eslesme_Yontemi"]] \
-        .rename(columns={"Yevmiye_Tutari": "Yevmiye_Tutari_TL", "Fark": "Fark_TL"}).reset_index(drop=True)
+    matched["Dovizli"] = (matched["Para_Birimi"] != "TRY").map({True: "Evet", False: "Hayır"})
+    diff, kur, res.kur_ozeti = kur_farki_ayir(matched, tolerance, kur_toleransi)
+    tl_adlari = {"Yevmiye_Tutari": "Yevmiye_Tutari_TL", "Fark": "Fark_TL"}
+    res["Tutar Farkları"] = diff.rename(columns=base_cols).rename(columns=tl_adlari)[TUTAR_FARKI_COLS] \
+        .reset_index(drop=True)
+    kur = kur.rename(columns=base_cols).rename(columns=tl_adlari)
+    kur["Fark_Yuzdesi"] = (kur["Fark_TL"] / kur["KDV_Haric_Tutar_TL"].where(kur["KDV_Haric_Tutar_TL"] != 0) * 100) \
+        .astype(float).round(2)
+    res.kur_farki = kur[KUR_FARKI_COLS].reset_index(drop=True)
 
     if not matched.empty:
         matched["Fatura_Donemi"] = matched["issue_date"].map(lambda d: period_of(d, period_type))
@@ -730,24 +795,50 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
 
 
 # ---------------------------------------------------------------------- tutarlılık kontrolleri
+ARDISIK_EVET = "Evet"
+ARDISIK_HAYIR = "Hayır"
+
+
+def ardisik_numaralar(fatura_nolari):
+    """Faturalar aynı serinin (ve yazılmışsa aynı yılın) ardışık sıra numaraları mı? (ör. ABC2024000000017,
+    ABC2024000000018). Distribütörün aynı gün ayrı faturalarla kestiği alımlarda görülür; bilgi amaçlıdır."""
+    anahtarlar = []
+    for no in fatura_nolari:
+        adaylar = belge_anahtarlari(no)
+        if not adaylar:
+            return False
+        anahtarlar.append(adaylar[0])
+    if len(anahtarlar) < 2 or len({(a[0], a[1]) for a in anahtarlar}) != 1:
+        return False
+    siralar = sorted(a[2] for a in anahtarlar)
+    return all(b - a == 1 for a, b in zip(siralar, siralar[1:]))
+
+
 def duplicate_suspects(invoices):
-    """Aynı tedarikçiden, aynı tarihli ve aynı tutarlı farklı numaralı faturalar (olası mükerrer)."""
-    cols = ["Tedarikci", "Tedarikci_VKN", "Fatura_Tarihi", "KDV_Haric_Tutar", "Fatura_No", "Adet"]
+    """Aynı tedarikçiden, aynı tarihli ve aynı tutarlı farklı numaralı faturalar (olası mükerrer).
+
+    Ardisik_Numara: grubun faturaları aynı serinin ardışık numaralarıysa "Evet" (bilgi; bulgu gizlenmez, ardışık
+    olmayanlar — daha şüpheli — önce sıralanır).
+    """
+    cols = ["Tedarikci", "Tedarikci_VKN", "Fatura_Tarihi", "KDV_Haric_Tutar", "Adet", "Ardisik_Numara", "Fatura_No"]
     if invoices.empty:
         return pd.DataFrame(columns=cols)
     df = invoices.copy()
     df["tutar"] = df["total_amount"].round(2)
     g = df.groupby(["supplier_vkn", "issue_date", "tutar"]).agg(
         Tedarikci=("supplier_name", "first"), Fatura_No=("invoice_no", lambda s: ", ".join(sorted(s))),
-        Adet=("id", "count")).reset_index()
+        Nolar=("invoice_no", list), Adet=("id", "count")).reset_index()
     g = g[g["Adet"] > 1].rename(columns={"supplier_vkn": "Tedarikci_VKN", "issue_date": "Fatura_Tarihi",
                                          "tutar": "KDV_Haric_Tutar"})
+    g["Ardisik_Numara"] = [ARDISIK_EVET if ardisik_numaralar(n) else ARDISIK_HAYIR for n in g["Nolar"]]
+    g = g.sort_values(["Ardisik_Numara", "Fatura_Tarihi", "Tedarikci_VKN"], ascending=[False, True, True],
+                      kind="mergesort")  # "Hayır" > "Evet": ardışık olmayanlar önce
     return g[cols].reset_index(drop=True)
 
 
 def calculation_errors(invoices, lines, tolerance=TOLERANCE_DEFAULT):
     """XML faturalarda satır toplamları ile belge toplamlarının tutarlılığı."""
-    cols = ["Fatura_No", "Tedarikci", "Kontrol", "Belgedeki_Tutar", "Hesaplanan_Tutar", "Fark"]
+    cols = ["Fatura_No", "Tedarikci", "Tedarikci_VKN", "Kontrol", "Belgedeki_Tutar", "Hesaplanan_Tutar", "Fark"]
     if invoices.empty:
         return pd.DataFrame(columns=cols)
     xml_inv = invoices[invoices["source"] == "XML"]
@@ -770,7 +861,8 @@ def calculation_errors(invoices, lines, tolerance=TOLERANCE_DEFAULT):
             if doc_val is None or pd.isna(doc_val):
                 continue
             if abs(float(doc_val) - float(calc_val)) > tolerance:
-                rows.append({"Fatura_No": r["invoice_no"], "Tedarikci": r["supplier_name"], "Kontrol": name,
+                rows.append({"Fatura_No": r["invoice_no"], "Tedarikci": r["supplier_name"],
+                             "Tedarikci_VKN": r["supplier_vkn"], "Kontrol": name,
                              "Belgedeki_Tutar": round(float(doc_val), 2), "Hesaplanan_Tutar": round(float(calc_val), 2),
                              "Fark": round(float(doc_val) - float(calc_val), 2)})
     return pd.DataFrame(rows, columns=cols)
@@ -778,41 +870,44 @@ def calculation_errors(invoices, lines, tolerance=TOLERANCE_DEFAULT):
 
 def customer_mismatch(invoices, company_vkn):
     """Alıcı VKN'si firma VKN'sinden farklı XML faturalar (başka firmaya kesilmiş fatura)."""
-    cols = ["Fatura_No", "Fatura_Tarihi", "Tedarikci", "Alici_VKN", "Alici_Unvan"]
+    cols = ["Fatura_No", "Fatura_Tarihi", "Tedarikci", "Tedarikci_VKN", "Alici_VKN", "Alici_Unvan"]
     company_vkn = normalize_vkn(company_vkn)
     if not company_vkn or invoices.empty:
         return pd.DataFrame(columns=cols)
     df = invoices[(invoices["source"] == "XML") & (invoices["customer_vkn"].fillna("") != company_vkn)]
     return df.rename(columns={"invoice_no": "Fatura_No", "issue_date": "Fatura_Tarihi", "supplier_name": "Tedarikci",
-                              "customer_vkn": "Alici_VKN", "customer_name": "Alici_Unvan"})[cols].reset_index(drop=True)
+                              "supplier_vkn": "Tedarikci_VKN", "customer_vkn": "Alici_VKN", "customer_name": "Alici_Unvan"})[cols].reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------- genel rapor
 def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn, haric_onekler=None,
-                   fiyat_kurallari=None):
+                   fiyat_kurallari=None, kur_toleransi=KUR_TOLERANSI_VARSAYILAN):
     """Tüm kontrolleri çalıştırır.
 
     haric_onekler: faturasız kayıt kontrolünde hariç tutulan belge no önekleri (None → varsayılan)
     fiyat_kurallari: FiyatKurallari (None → varsayılan kurallar)
+    kur_toleransi: dövizli faturalarda yüzde kur farkı toleransı (bkz. reconcile)
     Dönüş: (özet DataFrame, OrderedDict(başlık → DataFrame), notlar, sayılar)
-    sayılar: {"fatura", "yevmiye", "eslesme", "faturasiz_ozeti", "faturasiz_haric", "fiyat_ozeti", "fiyat_haric"};
-    mutabakat yapılmadıysa eslesme / faturasiz_ozeti / faturasiz_haric None.
+    sayılar: {"fatura", "yevmiye", "eslesme", "faturasiz_ozeti", "faturasiz_haric", "kur_ozeti", "kur_farki",
+    "fiyat_ozeti", "fiyat_haric"}; mutabakat yapılmadıysa eslesme / faturasiz_ozeti / faturasiz_haric / kur_ozeti /
+    kur_farki None.
     """
     invoices = db.get_invoices_df()
     lines = db.get_lines_df()
     journal = db.get_journal_df()
     sections = OrderedDict()
     notes = []
-    eslesme = faturasiz_ozeti = faturasiz_haric = None
+    eslesme = faturasiz_ozeti = faturasiz_haric = kur_ozeti = kur_farki = None
 
     fiyat = fiyat_analizi(lines, period_type, threshold, fiyat_kurallari)
     sections[f"Fiyat Anomalileri (±%{threshold:g})"] = fiyat.riskli
 
     if accounts and not journal.empty:
-        recon = reconcile(invoices, journal, accounts, tolerance, period_type, haric_onekler)
+        recon = reconcile(invoices, journal, accounts, tolerance, period_type, haric_onekler, kur_toleransi)
         sections.update(recon)
         eslesme = recon.eslesme_ozeti
         faturasiz_ozeti, faturasiz_haric = recon.faturasiz_ozeti, recon.faturasiz_haric
+        kur_ozeti, kur_farki = recon.kur_ozeti, recon.kur_farki
         if not faturasiz_ozeti["isaretli"]:
             notes.append("Yevmiye tutarları işaretsiz (negatif tutar yok); faturasız kayıt kontrolünde "
                          "borç/alacak yönü filtresi uygulanmadı.")
@@ -832,4 +927,5 @@ def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn,
         [{"Kontrol": name, "Bulgu_Sayisi": len(df)} for name, df in sections.items()])
     return summary, sections, notes, {"fatura": len(invoices), "yevmiye": len(journal), "eslesme": eslesme,
                                       "faturasiz_ozeti": faturasiz_ozeti, "faturasiz_haric": faturasiz_haric,
+                                      "kur_ozeti": kur_ozeti, "kur_farki": kur_farki,
                                       "fiyat_ozeti": fiyat.ozet, "fiyat_haric": fiyat.haric}

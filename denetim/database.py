@@ -73,6 +73,13 @@ CREATE TABLE IF NOT EXISTS journal_entries (
     source_row INTEGER,
     import_id INTEGER
 );
+CREATE TABLE IF NOT EXISTS bulgu_inceleme (
+    anahtar TEXT PRIMARY KEY,        -- Kararlı bulgu kimliği (bkz. denetim/inceleme.py)
+    kontrol TEXT,                    -- Kontrol kodu (TUTAR_FARKI, MUKERRER ...)
+    durum TEXT NOT NULL,             -- Açık / İncelendi – Sorun Yok / Düzeltme İstendi
+    aciklama TEXT,                   -- Denetçi notu
+    tarih TEXT                       -- Son değişiklik
+);
 CREATE INDEX IF NOT EXISTS ix_lines_invoice ON invoice_lines(invoice_id);
 CREATE INDEX IF NOT EXISTS ix_journal_doc ON journal_entries(document_no_norm);
 CREATE INDEX IF NOT EXISTS ix_invoice_no ON invoices(invoice_no_norm);
@@ -276,7 +283,8 @@ class DatabaseManager:
             }
 
     def clear_data(self):
-        """Ayarlar hariç tüm verileri siler."""
+        """Ayarlar ve bulgu inceleme kayıtları hariç tüm verileri siler (incelemeler kararlı bulgu anahtarıyla
+        saklandığından veriler yeniden yüklendiğinde aynı bulgulara uygulanır)."""
         with self.connection() as conn:
             for table in ("invoice_lines", "invoices", "journal_entries", "imports"):
                 conn.execute(f"DELETE FROM {table}")

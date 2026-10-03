@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from denetim import checks, importers  # noqa: E402
+from denetim import checks, importers, inceleme  # noqa: E402
 from denetim.export import export_sections  # noqa: E402
 from denetim.firms import FirmRegistry  # noqa: E402
 from denetim.utils import normalize_doc_no, parse_account_list  # noqa: E402
@@ -33,6 +33,9 @@ SECTION_TRUTH = {
 }
 FATURASIZ = "Faturası Bulunmayan Yevmiye Kayıtları"
 ESIKLER = (10, 15, 25, 35)
+KUR_TOLERANSLARI = (0, 0.5, 1, 2)
+DURUM_KISA = {inceleme.DURUM_ACIK: "acik", inceleme.DURUM_SORUN_YOK: "sorun_yok",
+              inceleme.DURUM_DUZELTME: "duzeltme"}
 MIN_ALIMLAR = (1, 2, 3, 4, 5)
 # Bilinen bir hatayı temsil etmeyen, bilgi amaçlı bölümler: yanlış alarm sayılmaz, ayrıca raporlanır.
 # "Belge No Uyuşmayan Eşleşmeler" belge_style="kisa" vb. firmalarda dolabilir (belge no yazım hatası bulgusu).
@@ -170,6 +173,39 @@ def score(meta, sections):
     return res, fp_causes
 
 
+def gercek_bulgu_maskesi(key, df, meta):
+    """Bölümdeki her satır bilinen bir hatayı mı temsil ediyor? (score() ile aynı ölçüt, satır bazında)"""
+    truth = meta["truth"]
+    if df.empty:
+        return []
+    if key == "Olası Mükerrer Faturalar":
+        pairs = [set(p) for p in truth["mukerrer_fatura"]]
+        return [any(p <= set(str(s).split(", ")) for p in pairs) for s in df["Fatura_No"]]
+    expected = {normalize_doc_no(x) for t in SECTION_TRUTH[key] for x in truth[t]}
+    col = "Yevmiye_Belge_No" if key == FATURASIZ else "Fatura_No"
+    return [normalize_doc_no(x) in expected for x in df[col]]
+
+
+def inceleme_durumu(meta, sections, kayitlar):
+    """Bulgu bölümlerine inceleme durumlarını uygular; açık / sorun yok / düzeltme sayılarını gerçek hata ve yanlış
+    alarm olarak ayırır. Dönüş: (sayılar, yanlış alarm anahtarları)"""
+    say = Counter()
+    yanlis = []
+    for title, df in inceleme.bolumlere_uygula(sections, kayitlar).items():
+        key = next((k for k in SECTION_TRUTH if title.startswith(k)), None)
+        if key is None or df.empty:
+            continue
+        for gercek, durum, anahtar in zip(gercek_bulgu_maskesi(key, df, meta), df[inceleme.DURUM_COL],
+                                          df[inceleme.ANAHTAR_COL]):
+            say[("gercek_" if gercek else "yanlis_") + DURUM_KISA[durum]] += 1
+            if not gercek:
+                yanlis.append(anahtar)
+        if key == "Olası Mükerrer Faturalar":
+            for gercek, ardisik in zip(gercek_bulgu_maskesi(key, df, meta), df["Ardisik_Numara"]):
+                say[f"mukerrer_{'gercek' if gercek else 'yanlis'}_ardisik_{ardisik}"] += 1
+    return dict(say), yanlis
+
+
 def fiyat_puani(meta, lines, threshold, kurallar):
     """Fiyat şişirme yakalama / yanlış alarm (fatura bazında) ve eşik üstü olup yetersiz veri sayılan satırlar."""
     res = checks.fiyat_analizi(lines, "Aylık", threshold, kurallar)
@@ -248,6 +284,31 @@ def print_totals(all_results):
     for n in MIN_ALIMLAR:
         a = topla("min_alim", n)
         print(f"  en az {n}: {a[0]}/{a[1]} yanlış alarm={a[2]:4d} yetersiz veri satırı={a[3]}")
+    print("Tutar farkı, dövizli faturalarda yüzde kur toleransına göre (TL faturalarda yalnızca 0,01 TL tolerans)")
+    for pct in KUR_TOLERANSLARI:
+        a = [sum(r["kur"][pct][k] for r in all_results) for k in ("bulunan", "beklenen", "yanlis_alarm",
+                                                                    "tolerans_ici")]
+        print(f"  %{pct:<4g} {a[0]}/{a[1]} yanlış alarm={a[2]:4d} kur farkı (tolerans içi, bilgi)={a[3]}")
+    t50 = [sum(r["tolerans50_tutar"][k] for r in all_results if "tolerans50_tutar" in r)
+           for k in ("bulunan", "beklenen", "yanlis_alarm")]
+    print(f"  (karşılaştırma: dövizli firmalarda tüm faturalara 50 TL sabit tolerans, %0 kur: {t50[0]}/{t50[1]} "
+          f"yanlış alarm={t50[2]})")
+    i1, i2 = Counter(), Counter()
+    for r in all_results:
+        i1.update(r["inceleme_1"])
+        i2.update(r["inceleme_2"])
+    print("Bulgu inceleme (Metin 1. çalıştırmada yanlış alarmları 'İncelendi – Sorun Yok' işaretler; veriler silinip "
+          "yeniden yüklenir, rapor yeniden çalıştırılır)")
+    print(f"  1. çalıştırma: açık yanlış alarm={i1['yanlis_acik']} açık gerçek hata={i1['gercek_acik']}  "
+          f"→ işaretlenen={sum(r['isaretlenen'] for r in all_results)}")
+    print(f"  2. çalıştırma: açık yanlış alarm={i2['yanlis_acik']} sorun yok (gizli)={i2['yanlis_sorun_yok']} "
+          f"| gerçek hata açık={i2['gercek_acik']} sorun yok={i2['gercek_sorun_yok']} "
+          f"düzeltme={i2['gercek_duzeltme']}  yakalanan={sum(r['score2_bulunan'] for r in all_results)}/"
+          f"{sum(r['score2_beklenen'] for r in all_results)}")
+    print(f"  Mükerrer, ardışık numara: gerçek {i1['mukerrer_gercek_ardisik_Evet']}/"
+          f"{i1['mukerrer_gercek_ardisik_Evet'] + i1['mukerrer_gercek_ardisik_Hayır']} ardışık, yanlış alarm "
+          f"{i1['mukerrer_yanlis_ardisik_Evet']}/"
+          f"{i1['mukerrer_yanlis_ardisik_Evet'] + i1['mukerrer_yanlis_ardisik_Hayır']} ardışık")
     elle = Counter(f for r in all_results for f in r["friction"])
     n_elle = sum(1 for r in all_results if r["friction"])
     print(f"Elle müdahale gereken yevmiye dosyası: {n_elle}/{len(all_results)} {dict(elle)}  "
@@ -272,13 +333,6 @@ def main():
         t = time.time()
         summary, sections, notes, counts = checks.run_full_audit(db, "Aylık", 15.0, accounts, 0.01, firm.vkn)
         log["t_audit"] = round(time.time() - t, 1)
-        export_sections(os.path.join(WORK, f"{meta['code']}_Denetim_Raporu.xlsx"),
-                        dict([("Özet", summary), ("Eşleşme Özeti", checks.eslesme_ozeti_df(counts["eslesme"])),
-                              ("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(counts["faturasiz_ozeti"])),
-                              ("Fiyat Analizi Özeti", checks.fiyat_ozeti_df(counts["fiyat_ozeti"]))]
-                             + list(sections.items())
-                             + [("Faturasız Listeden Hariç Tutulanlar", counts["faturasiz_haric"]),
-                                ("Fiyat Analizi Dışı Satırlar", counts["fiyat_haric"])]))
         sc, fp = score(meta, sections)
         log["faturasiz_ozeti"] = {k: v for k, v in counts["faturasiz_ozeti"].items() if k != "onekler"}
         # Önek listesinin katkısı: boş önek listesiyle (yalnızca borç yönü filtresi) aynı kontrol
@@ -287,9 +341,17 @@ def main():
                                          yuksek_oncelik=bos.faturasiz_ozeti["yuksek"])
         log["eslesme"] = dict(counts["eslesme"] or {})
         log["bilgi"] = info(sections)
-        # Metin'in ikinci denemesi: dövizli firmalarda tolerans 50 TL
+        # Dövizli faturalarda yüzde kur toleransının etkisi (%0 = madde 6 öncesi davranış)
+        log["kur_ozeti"] = counts["kur_ozeti"]
+        log["kur"] = {}
+        inv_df, jou_df = db.get_invoices_df(), db.get_journal_df()
+        for pct in KUR_TOLERANSLARI:
+            r = checks.reconcile(inv_df, jou_df, accounts, 0.01, "Aylık", kur_toleransi=pct)
+            log["kur"][pct] = dict(score(meta, {"Tutar Farkları": r["Tutar Farkları"]})[0]["Tutar Farkları"],
+                                   tolerans_ici=r.kur_ozeti["tolerans_ici"])
+        # Metin'in ikinci denemesi (madde 6 öncesi): dövizli firmalarda tolerans 50 TL, yüzde kur toleransı yok
         if meta["foreign_invoices"]:
-            _, sec2, _, _ = checks.run_full_audit(db, "Aylık", 15.0, accounts, 50.0, firm.vkn)
+            _, sec2, _, _ = checks.run_full_audit(db, "Aylık", 15.0, accounts, 50.0, firm.vkn, kur_toleransi=0)
             sc2, _ = score(meta, sec2)
             log["tolerans50_tutar"] = sc2["Tutar Farkları"]
         # Fiyat analizi: eşik duyarlılığı varsayılan kurallarla ve boş anahtar kelime listesiyle (yalnızca
@@ -302,6 +364,29 @@ def main():
             log["esik_kelimesiz"][th] = fiyat_puani(meta, lines, th, checks.FiyatKurallari(kelimeler=[]))
         for n in MIN_ALIMLAR:
             log["min_alim"][n] = fiyat_puani(meta, lines, 15, checks.FiyatKurallari(min_alim=n))
+        # Bulgu inceleme: Metin yanlış alarmları "İncelendi – Sorun Yok" işaretler; ay sonunda muhasebeciden gelen
+        # dosyalar yeniden yüklenir (veriler silinir, aynı dosyalar tekrar içe aktarılır) ve rapor yeniden çalışır.
+        log["inceleme_1"], yanlis = inceleme_durumu(meta, sections, inceleme.incelemeleri_oku(db))
+        log["isaretlenen"] = inceleme.isaretle(db, yanlis, inceleme.DURUM_SORUN_YOK,
+                                               "Metin: incelendi, meşru (kur farkı / aynı gün araç alımı / fiyat dalgalanması)")
+        db.clear_data()
+        import_firm(meta, db, {})
+        summary, sections, notes, counts = checks.run_full_audit(db, "Aylık", 15.0, accounts, 0.01, firm.vkn)
+        kayitlar = inceleme.incelemeleri_oku(db)
+        log["inceleme_2"], _ = inceleme_durumu(meta, sections, kayitlar)
+        sc2, _ = score(meta, sections)
+        log["score2_bulunan"] = sum(v["bulunan"] for v in sc2.values())
+        log["score2_beklenen"] = sum(v["beklenen"] for v in sc2.values())
+        incelenen = inceleme.bolumlere_uygula(sections, kayitlar)
+        export_sections(os.path.join(WORK, f"{meta['code']}_Denetim_Raporu.xlsx"),
+                        dict([("Özet", summary), ("İnceleme Özeti", inceleme.inceleme_ozeti(incelenen)),
+                              ("Eşleşme Özeti", checks.eslesme_ozeti_df(counts["eslesme"])),
+                              ("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(counts["faturasiz_ozeti"])),
+                              ("Fiyat Analizi Özeti", checks.fiyat_ozeti_df(counts["fiyat_ozeti"]))]
+                             + list(incelenen.items())
+                             + [("Kur Farkı (Tolerans İçi)", counts["kur_farki"]),
+                                ("Faturasız Listeden Hariç Tutulanlar", counts["faturasiz_haric"]),
+                                ("Fiyat Analizi Dışı Satırlar", counts["fiyat_haric"])]))
         log["score"] = sc
         log["fp_causes"] = {k: dict(v) for k, v in fp.items()}
         all_results.append(log)
@@ -311,6 +396,7 @@ def main():
         print(f"{meta['code']} {meta['sector'][:12]:12s} fatura={log['added']:5d} yevmiye={log['journal_rows']:5d} "
               f"elle={','.join(log['friction']) or '-':32s} yakalanan={tp:3d}/{ex:3d} yanlış_alarm={fpn:4d} "
               f"belge_no_uyuşmayan={log['bilgi'].get('belge_no_uyusmayan', 0):3d} "
+              f"2.çalıştırma_açık_yanlış_alarm={log['inceleme_2'].get('yanlis_acik', 0):3d} "
               f"süre(xml/j/rapor)={log['t_xml']}/{log['t_journal']}/{log['t_audit']}s")
     print_totals(all_results)
     json.dump(all_results, open(os.path.join(BASE, "sonuclar.json"), "w", encoding="utf-8"), ensure_ascii=False,

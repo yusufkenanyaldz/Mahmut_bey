@@ -30,11 +30,13 @@ tutulur; firma değiştirmek için veri silmek ya da dosya kopyalamak gerekmez.
 - Firma kaydı: **kod / kısa ad** (benzersiz, büyük/küçük harf duyarsız), **unvan**, **VKN/TCKN** (isteğe bağlı,
   10 ya da 11 hane), **sektör** (isteğe bağlı) ve oluşturulma tarihi. Alıcı VKN kontrolü aktif firmanın
   VKN'sini kullanır. Kod sonradan değiştirilebilir; firmanın veritabanı dosyası değişmez.
-- Analiz ayarları (sapma eşiği, hesap kodları, tolerans, dönem tipi, faturasız kontrolde hariç tutulan belge no
-  önekleri, fiyat analizinin hariç tutma kuralları, kelime listesi ve en az alım sayısı) firma başına saklanır.
+- Analiz ayarları (sapma eşiği, hesap kodları, TL toleransı, dövizli faturalar için kur toleransı, dönem tipi,
+  faturasız kontrolde hariç tutulan belge no önekleri, fiyat analizinin hariç tutma kuralları, kelime listesi ve en az
+  alım sayısı) ve bulgu inceleme kayıtları firma başına saklanır.
 - Firma seçilmeden veri yükleme / analiz / ayar ekranları açılmaz; firma seçme ekranına yönlendirilirsiniz.
 - Son seçilen firma bir sonraki açılışta otomatik açılır.
-- **Tüm Verileri Sil** (Firma ve Veri Ayarları) yalnızca aktif firmanın fatura ve yevmiye kayıtlarını siler.
+- **Tüm Verileri Sil** (Firma ve Veri Ayarları) yalnızca aktif firmanın fatura ve yevmiye kayıtlarını siler; ayarlar,
+  kayıtlı sütun eşlemeleri ve bulgu inceleme kayıtları kalır (veriler yeniden yüklendiğinde aynı bulgulara uygulanır).
 - **Sil** (firma listesi) firmayı ve veritabanı dosyasını onay sonrası **kalıcı olarak** siler; geri alınamaz.
 
 Dosyalar uygulama klasöründeki `veri/` altında tutulur:
@@ -98,13 +100,13 @@ Fatura Excel'inde de `Fatura No`, `Fatura Tarihi`, `Satıcı VKN/TCKN`, `Satıc�
 | Fiyat anomalileri | Dönem (aylık/çeyreklik/yıllık) + ürün + birim + para birimi bazında ağırlıklı ortalama birim fiyattan, kullanıcının belirlediği % eşiği aşan sapmalar (belge para biriminde, KDV hariç; iadeler, tevkifatlı faturalar ve hizmet / hakediş kalemleri hariç; aşağıya bakın) |
 | Muhasebeleşmemiş faturalar | Yevmiyede hiçbir yöntemle (aşağıya bakın) karşılığı bulunamayan faturalar |
 | Seçili hesap dışına kaydedilmiş | Belge no (tam ya da seri+sıra) yevmiyede var ama girilen hesap kodlarında değil (yanlış hesap şüphesi) |
-| Tutar farkları | Fatura KDV hariç tutarı ile seçili hesaplardaki yevmiye toplamı arasındaki tolerans üstü farklar |
+| Tutar farkları | Fatura KDV hariç tutarı ile seçili hesaplardaki yevmiye toplamı arasındaki tolerans üstü farklar (TL faturada sabit TL toleransı, dövizli faturada ayrıca yüzde kur toleransı; aşağıya bakın) |
 | Dönem farkları | Fatura dönemi ile yevmiye kayıt dönemi farklı |
 | Belge no uyuşmayan eşleşmeler | Belge no tutmadığı için tutar + tarih ile eşleştirilen faturalar (belge no yazım hatası; kontrol edin) |
 | Faturası bulunmayan yevmiye kayıtları | Seçili hesaplarda olup hiçbir yöntemle bir faturayla eşleşmeyen, net borç yönlü ve hariç önekle başlamayan belgeler (faturasız gider/alış adayları; öncelik sütunlu, aşağıya bakın) |
 | Belirsiz eşleşme (aynı no) | Aynı fatura numarası birden fazla tedarikçide (yevmiyede VKN olmadığından eşleşme belirsiz) |
 | Belirsiz eşleşme (seri+sıra) | Kısaltılmış belge no birden fazla faturaya ya da fatura birden fazla belgeye uyuyor |
-| Olası mükerrer faturalar | Aynı tedarikçi, aynı tarih, aynı tutar, farklı numara |
+| Olası mükerrer faturalar | Aynı tedarikçi, aynı tarih, aynı tutar, farklı numara (`Ardisik_Numara`: aynı serinin ardışık numaralarıysa "Evet"; bilgi amaçlı, ardışık olmayanlar önce sıralanır) |
 | Fatura hesaplama tutarsızlıkları | XML'de satır toplamları / iskonto / KDV ile belge toplamlarının uyuşmaması |
 | Alıcısı firma olmayan faturalar | XML'deki alıcı VKN'si firma VKN'sinden farklı |
 
@@ -194,6 +196,43 @@ gösteren bir özet satırı yer alır; Excel raporunda **Faturasız Kayıt Öze
 **Hariç tutulanları Excel'e ekle** seçiliyse listeye alınmayan kayıtlar nedenleriyle birlikte
 **Faturasız Listeden Hariç Tutulanlar** bilgi sayfasına yazılır.
 
+### Tutar farkı toleransı (TL ve dövizli faturalar)
+
+- **TL faturalar:** fark (|yevmiye| − |fatura KDV hariç TL|) **Tolerans (TL)** değerini (varsayılan 0,01) aşarsa
+  tutar farkıdır. TL faturalara yüzde tolerans **uygulanmaz**: rakam yer değiştirme hataları
+  (12.345,67 → 12.354,67) yalnızca birkaç TL fark yaratır ve yüzde tolerans bunları gizlerdi.
+- **Dövizli (TRY dışı) faturalar:** muhasebe çoğu zaman fatura kuru yerine ödeme / kayıt gününün kurunu kullanır.
+  Fark ≤ max(TL toleransı, **Kur Toleransı (%)** × fatura TL tutarı) ise tutar farkı sayılmaz; bu faturalar
+  ekranda ve raporda "Kur farkı (tolerans içi, bilgi)" sayısıyla özetlenir ve Excel'de
+  **Kur Farkı (Tolerans İçi)** bilgi sayfasında (fark ve fark yüzdesiyle) listelenir. Toleransı aşan dövizli farklar
+  **Tutar Farkları**'nda kalır; bölümde `Dovizli`, `Para_Birimi` ve `Kur` sütunları gösterilir.
+- Kur toleransı firma başına saklanır (varsayılan **%1**; `0` → yüzde tolerans kapalı) ve **Muhasebe Mutabakatı**
+  ile **Genel Denetim Raporu** ekranlarından düzenlenir.
+
+## Bulgu inceleme (denetçi iş akışı)
+
+Fiyat Risk Analizi, Muhasebe Mutabakatı ve Genel Denetim Raporu sonuçları **Bulgular** sekmesinde satır seçilebilen
+bir tabloda gösterilir (metin özeti **Özet (metin)** sekmesindedir). Akış:
+
+1. **Kontrol** listesinden bölümü seçin (listede her kontrolün açık / sorun yok / düzeltme istendi sayıları yazar).
+2. Satır(lar)ı seçin (Ctrl / Shift ile çoklu; **Tümünü Seç** ya da Ctrl+A), isterseniz **Not** yazın.
+3. **✔ İncelendi – Sorun Yok**, **✎ Düzeltme İstendi** ya da **↺ Açığa Al**. Not boş bırakılırsa mevcut not korunur;
+   tek satır seçildiğinde notu kutuya gelir.
+
+- Her bulgunun durumu (Açık / İncelendi – Sorun Yok / Düzeltme İstendi), notu ve tarihi firmanın veritabanında
+  kalıcıdır. **Sorun yok olanları göster** kapalıyken (varsayılan) "sorun yok" işaretli bulgular tablodan gizlenir;
+  özet sayılarında görünmeye devam eder.
+- **Bulgu kimliği kararlıdır:** kontrol türü + normalize tedarikçi VKN + normalize fatura no (faturasız kayıtta
+  belge no, mükerrer grubunda sıralı fatura no listesi, fiyat anomalisinde ayrıca ürün adı, hesaplama kontrolünde
+  kontrol adı). Tutar, eşik, tolerans, satır sırası ya da veritabanı kimliği anahtara girmez; bu yüzden rapor yeniden
+  çalıştırıldığında, veriler silinip yeniden yüklendiğinde ya da kullanılan muhasebe dökümü değiştiğinde işaretler
+  korunur. Aynı fatura farklı kontrollerde (ör. tutar farkı ve dönem farkı) ayrı bulgudur.
+- Excel raporunda bulgu sayfalarına `Inceleme_Durumu`, `Inceleme_Notu`, `Inceleme_Tarihi` ve `Bulgu_Anahtari`
+  sütunları, başa **İnceleme Özeti** sayfası (kontrol başına açık / sorun yok / düzeltme istendi) eklenir; Excel'de
+  "sorun yok" bulgular gizlenmez, durum sütunuyla süzülebilir.
+- Yalnızca bilgi amaçlı listeler (yetersiz veri, analiz dışı satırlar, faturasız listeden hariç tutulanlar,
+  tolerans içi kur farkları) işaretlenmez.
+
 ## Veri güvenliği
 
 - Aynı dosya ikinci kez seçilirse uyarı verilir (yevmiyede tutarların çift sayılmasını önler).
@@ -205,13 +244,14 @@ gösteren bir özet satırı yer alır; Excel raporunda **Faturasız Kayıt Öze
 ## Proje yapısı
 
 ```
-app.py                 Arayüz (customtkinter), sütun eşleme penceresi
+app.py                 Arayüz (customtkinter), sütun eşleme penceresi, bulgu tablosu (ttk.Treeview)
 denetim/firms.py       Firma kayıt defteri (firma başına veritabanı, son firma, eski audit_data.db aktarımı)
 denetim/database.py    SQLite şeması, kayıt/okuma, eski sürüm taşıma
 denetim/export.py      Çok sayfalı Excel rapor çıktısı
 denetim/ubl.py         UBL-TR XML ayrıştırıcı
 denetim/importers.py   Excel/XML doğrulama, başlık satırı tespiti, sütun eşleme, satır bazlı hata raporu, şablonlar
 denetim/checks.py      Fiyat analizi, mutabakat ve tüm denetim kontrolleri
+denetim/inceleme.py    Bulgu inceleme: kararlı bulgu anahtarı, durum/not kaydı, rapora uygulama ve özet
 denetim/utils.py       Sayı/tarih/metin/birim normalizasyonu
 tests/                 Birim testleri ve örnek XML
 ```

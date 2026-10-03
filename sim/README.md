@@ -29,20 +29,22 @@ yöntemlerinin dağılımını yazdırır. Yalnızca bilgi amaçlı bölümler (
 "Belirsiz Eşleşme (Birden Fazla Seri+Sıra Adayı)") bilinen bir hatayı temsil etmediği için puanlamaya
 katılmaz, yanlış alarm sayılmaz; `sonuclar.json` içinde firma başına `bilgi` alanında ayrıca raporlanır.
 
-| Kontrol | v2.0 yakalanan | v2.0 yanlış alarm | Madde 2 sonrası yakalanan | Madde 2 sonrası yanlış alarm | Madde 3 sonrası yakalanan | Madde 3 sonrası yanlış alarm | Madde 4 sonrası yakalanan | Madde 4 sonrası yanlış alarm | Madde 5 sonrası yakalanan | Madde 5 sonrası yanlış alarm |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Muhasebeleşmemiş fatura | 46/46 | 998 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 |
-| Yanlış hesaba kayıt | 51/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 |
-| Tutar farkı | 70/77 | 206 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 |
-| Dönem kayması | 34/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 |
-| Faturasız gider kaydı | 52/52 | 1.404 | 52/52 | 412 | 52/52 | 412 | 52/52 | 0 | 52/52 | 0 |
-| Mükerrer fatura | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 |
-| Fiyat şişirme | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | **7** |
-| Başka firmaya kesilmiş fatura | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 |
-| XML hesaplama hatası | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 |
-| **Toplam** | **363/385** | **3.683** | **385/385** | **1.759** | **385/385** | **1.759** | **385/385** | **1.347** | **385/385** | **538** |
+| Kontrol | v2.0 yakalanan | v2.0 yanlış alarm | Madde 2 sonrası yakalanan | Madde 2 sonrası yanlış alarm | Madde 3 sonrası yakalanan | Madde 3 sonrası yanlış alarm | Madde 4 sonrası yakalanan | Madde 4 sonrası yanlış alarm | Madde 5 sonrası yakalanan | Madde 5 sonrası yanlış alarm | Madde 6 sonrası yakalanan | Madde 6 sonrası yanlış alarm |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Muhasebeleşmemiş fatura | 46/46 | 998 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 |
+| Yanlış hesaba kayıt | 51/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 |
+| Tutar farkı | 70/77 | 206 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 | 77/77 | **11** |
+| Dönem kayması | 34/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 |
+| Faturasız gider kaydı | 52/52 | 1.404 | 52/52 | 412 | 52/52 | 412 | 52/52 | 0 | 52/52 | 0 | 52/52 | 0 |
+| Mükerrer fatura | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 (incelemeden sonra açık: 0) |
+| Fiyat şişirme | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | **7** | 41/41 | 7 |
+| Başka firmaya kesilmiş fatura | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 |
+| XML hesaplama hatası | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 |
+| **Toplam** | **363/385** | **3.683** | **385/385** | **1.759** | **385/385** | **1.759** | **385/385** | **1.347** | **385/385** | **538** | **385/385** | **277** (incelemeden sonra açık: **0**) |
 
-Firma seçici (madde 1) sonuçları değiştirmedi; v2.0 sütunu madde 1 sonrası için de geçerlidir.
+Firma seçici (madde 1) sonuçları değiştirmedi; v2.0 sütunu madde 1 sonrası için de geçerlidir. Madde 6 sütunu
+varsayılan %1 kur toleransıyla, inceleme işaretleri uygulanmadan (ilk çalıştırma) ölçülmüştür; "incelemeden sonra
+açık" ikinci çalıştırmadır (aşağıya bakın).
 
 **Madde 2 (akıllı belge no eşleştirme)** — belge no biçimine göre:
 
@@ -142,3 +144,43 @@ Eşik duyarlılığı (`metin.py` her çalıştırmada yazdırır):
   sayfasında görünür. Çok seyrek alım yapan firmalarda en az alım 2'ye (ya da kuralı kapatmak için 1'e) indirilebilir.
 - Raporlara **Fiyat Analizi Özeti** ve **Fiyat Analizi Dışı Satırlar** sayfaları eklendi (40 firmada analiz dışı:
   iade 40, tevkifat 1.068, anahtar kelime 1.419 satır; incelenen 14.923 satır).
+
+**Madde 6 (dövizli faturalarda yüzde kur toleransı + bulgu inceleme işareti)** — yakalama 385/385 kaldı; yanlış alarm
+ilk çalıştırmada 538 → **277**, Metin'in incelemesinden sonraki çalıştırmada açık yanlış alarm **0**.
+
+Tutar farkı, dövizli faturalarda yüzde kur toleransına göre (TL faturalarda her durumda yalnızca 0,01 TL tolerans):
+
+| Kur toleransı | Tutar farkı yakalanan | Yanlış alarm | Kur farkı (tolerans içi, bilgi) |
+|---|---|---|---|
+| %0 (madde 5 sonrası davranış) | 77/77 | 272 | 0 |
+| %0,5 | 77/77 | 62 | 210 |
+| **%1 (varsayılan)** | 77/77 | **11** | 261 |
+| %2 | 77/77 | 8 | 264 |
+| Karşılaştırma: dövizli 8 firmada tüm faturalara 50 TL sabit tolerans, %0 kur | 12/12 (bu 8 firmada) | 182 | — |
+
+- 8 taşımacılık firmasında 265 dövizli (EUR) fatura eşleşiyor; %1'de 261'i tolerans içi kur farkı olarak bilgiye
+  alındı, 3'ü %1,02–%1,17 farkla Tutar Farkları'nda kaldı (`Dovizli` = Evet, `Kur` sütunuyla). Simülasyonda muhasebe
+  kuru fatura kurundan σ ≈ %0,4 sapıyor; %1 ≈ 2,5σ.
+- Kalan 8 yanlış alarm TL faturalardır (57–455 TL fark; madde 5 öncesinden beri listede, simülasyonun hata listesine
+  yazmadığı farklar). TL faturalara bilinçli olarak yüzde tolerans uygulanmıyor: simülasyondaki rakam yer değiştirme
+  hataları yalnızca birkaç TL fark yaratıyor (ör. 9 TL) ve %1 tolerans bunları gizlerdi. Sabit 50 TL tolerans ise
+  dövizli firmalarda yanlış alarmı yalnızca 182'ye indiriyor ve küçük TL hatalarını gizleme riski taşıyor.
+
+Bulgu inceleme senaryosu (`metin.py` her çalıştırmada yazdırır): Metin ilk çalıştırmada bilinen hata listesinde
+olmayan her bulguyu "İncelendi – Sorun Yok" olarak işaretler; ardından firmanın fatura ve yevmiye verileri silinip
+aynı dosyalar yeniden içe aktarılır (yeni veritabanı kimlikleri) ve rapor yeniden çalıştırılır.
+
+| | Açık yanlış alarm | "Sorun yok" (gizli) | Gerçek hata açık |
+|---|---|---|---|
+| 1. çalıştırma | 277 (mükerrer 259, tutar farkı 11, fiyat 7) | 0 | 385/385 |
+| 2. çalıştırma (yeniden içe aktarma sonrası) | **0** | 277 | **385/385** (hiçbiri yanlışlıkla kapanmadı) |
+
+- 277 bulgu 277 farklı kararlı anahtarla işaretlendi; yeniden içe aktarmadan sonra hepsi aynı anahtarla bulundu.
+- **Mükerrer, ardışık numara (bilgi):** yanlış alarm gruplarının 34/259'u, gerçek mükerrerlerin 2/41'i aynı serinin
+  ardışık numaraları. Simülasyondaki otomotiv yanlış alarmlarının çoğu, sabit liste fiyatlı araçların farklı
+  zamanlarda kesilmiş faturalarının aynı güne denk gelmesidir (numaralar ardışık değil); ardışık numaralı toplu alım
+  grupları azınlıkta. Bu yüzden ardışık numara bulguyu gizlemez, yalnızca sıralar (ardışık olmayanlar önce) — mükerrer
+  yanlış alarmları denetçinin "sorun yok" işaretiyle kapanır.
+- Raporlara **İnceleme Özeti** ve **Kur Farkı (Tolerans İçi)** sayfaları ile bulgu sayfalarına `Inceleme_Durumu`,
+  `Inceleme_Notu`, `Inceleme_Tarihi`, `Bulgu_Anahtari` sütunları eklendi (`sim/calisma/<KOD>_Denetim_Raporu.xlsx`
+  ikinci çalıştırmanın raporudur).
