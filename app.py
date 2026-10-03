@@ -571,17 +571,17 @@ class AuditApp(ctk.CTk):
         """Vergi ve satış mutabakatı ayarları: KDV (191), tevkifat (360), gelir (600–602) ve hesaplanan KDV (391)
         hesapları, maliyete eklenen vergi türü kodları (Varsayılan butonuyla)."""
         row0 = self.create_button_row()
-        kdv = self.add_labeled_entry(row0, "KDV Hesapları (indirilecek):",
-                                     self.setting("kdv_hesaplari", checks.VARSAYILAN_KDV_HESAPLARI), 120,
+        kdv = self.add_labeled_entry(row0, "İndirilecek KDV:",
+                                     self.setting("kdv_hesaplari", checks.VARSAYILAN_KDV_HESAPLARI), 90,
                                      "boş: KDV kontrolü yok")
-        tev = self.add_labeled_entry(row0, "Tevkifat Hesapları:",
-                                     self.setting("tevkifat_hesaplari", checks.VARSAYILAN_TEVKIFAT_HESAPLARI), 120,
+        tev = self.add_labeled_entry(row0, "Tevkifat:",
+                                     self.setting("tevkifat_hesaplari", checks.VARSAYILAN_TEVKIFAT_HESAPLARI), 90,
                                      "boş: tevkifat kontrolü yok")
-        gelir = self.add_labeled_entry(row0, "Gelir Hesapları (satış):",
-                                       self.setting("gelir_hesaplari", checks.VARSAYILAN_GELIR_HESAPLARI), 130,
+        gelir = self.add_labeled_entry(row0, "Gelir (satış):",
+                                       self.setting("gelir_hesaplari", checks.VARSAYILAN_GELIR_HESAPLARI), 120,
                                        "boş: satış mutabakatı yok")
         skdv = self.add_labeled_entry(row0, "Hesaplanan KDV:",
-                                      self.setting("satis_kdv_hesaplari", checks.VARSAYILAN_SATIS_KDV_HESAPLARI), 80,
+                                      self.setting("satis_kdv_hesaplari", checks.VARSAYILAN_SATIS_KDV_HESAPLARI), 70,
                                       "boş: yok")
         row = self.create_button_row()
         kodlar = self.add_labeled_entry(

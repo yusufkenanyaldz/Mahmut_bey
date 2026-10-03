@@ -843,7 +843,7 @@ def alis_vergi_bulgulari(inv, belgeler, yontemler, jou, kdv_hesaplari, tevkifat_
     belgeler: {fatura index: [document_no_norm, ...]} (madde 2 eşleştirmesinin bulduğu belgeler)
     maliyet_farki: {fatura index: seçili hesaplardaki tutar farkı} (KDV maliyete eklenmiş tespiti için)
     Tevkifatlı faturada 191'e TAM KDV yazılır (indirilecek KDV); tevkif edilen kısım 360'a ALACAK yazılır.
-    İade faturalarında yönler terstir. Dönüş: (KDV farkları, KDV'si kaydedilmemiş, tevkifat bulguları, özet)
+    İade faturalarında yönler terstir; KDV'nin yönü yalnızca XML faturalarda kontrol edilir (Excel'de tip bilinmeyebilir). Dönüş: (KDV farkları, KDV'si kaydedilmemiş, tevkifat bulguları, özet)
     """
     kdv_top = _belge_toplamlari(jou, kdv_hesaplari)
     tev_top = _belge_toplamlari(jou, tevkifat_hesaplari)
@@ -875,7 +875,8 @@ def alis_vergi_bulgulari(inv, belgeler, yontemler, jou, kdv_hesaplari, tevkifat_
                         sorted(set().union(*(hesap_adi.get(d, []) for d in docs))))))
             else:
                 fark = round(abs(tutar) - kdv, 2)
-                ters = isaretli and kdv > sinir and tutar * isaret < 0
+                # Yön yalnızca XML faturada kontrol edilir: Excel'de fatura tipi (iade) çoğunlukla bilinmez
+                ters = isaretli and r.get("source") == "XML" and kdv > sinir and tutar * isaret < 0
                 if abs(fark) > sinir or ters:
                     if ters:
                         neden = NEDEN_TERS_YON

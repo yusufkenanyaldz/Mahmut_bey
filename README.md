@@ -14,8 +14,9 @@ Testler: `pip install pytest && python -m pytest`
 
 ## Önerilen akış
 
-1. **Firma Seç / Yönet** → Firmayı seçin ya da yeni firma oluşturun (VKN'yi girin; alıcı VKN kontrolü için).
-2. **UBL-TR (XML) Yükle** → Tek tek, çoklu, ZIP ya da klasör olarak e-Fatura/e-Arşiv XML'leri.
+1. **Firma Seç / Yönet** → Firmayı seçin ya da yeni firma oluşturun (VKN'yi girin; alıcı VKN kontrolü ve satış
+   faturalarının ayırt edilmesi için).
+2. **UBL-TR (XML) Yükle** → Tek tek, çoklu, ZIP ya da klasör olarak e-Fatura/e-Arşiv XML'leri (gelen ve giden).
 3. **Fatura (Excel) Yükle** → XML'i olmayan faturalar için (şablon butondan indirilebilir).
 4. **Yevmiye (Excel) Yükle** → Muhasebe kayıtları.
 5. **Genel Denetim Raporu** → Tüm kontroller + çok sayfalı Excel raporu.
@@ -32,7 +33,8 @@ tutulur; firma değiştirmek için veri silmek ya da dosya kopyalamak gerekmez.
   VKN'sini kullanır. Kod sonradan değiştirilebilir; firmanın veritabanı dosyası değişmez.
 - Analiz ayarları (sapma eşiği, hesap kodları, TL toleransı, dövizli faturalar için kur toleransı, dönem tipi,
   faturasız kontrolde hariç tutulan belge no önekleri, fiyat analizinin hariç tutma kuralları, kelime listesi ve en az
-  alım sayısı) ve bulgu inceleme kayıtları firma başına saklanır.
+  alım sayısı, KDV / tevkifat / gelir / hesaplanan KDV hesapları ve maliyete eklenen vergi kodları) ve bulgu inceleme
+  kayıtları firma başına saklanır.
 - Firma seçilmeden veri yükleme / analiz / ayar ekranları açılmaz; firma seçme ekranına yönlendirilirsiniz.
 - Son seçilen firma bir sonraki açılışta otomatik açılır.
 - **Tüm Verileri Sil** (Firma ve Veri Ayarları) yalnızca aktif firmanın fatura ve yevmiye kayıtlarını siler; ayarlar,
@@ -54,8 +56,15 @@ düzenlenebilir). Eski dosya silinmez ve değiştirilmez.
 ## Şablonlar
 
 **Fatura Excel** — zorunlu: `Fatura_No, Tarih, Tedarikci_VKN, Tedarikci_Ad, Urun_Adi, Miktar, Fiyat`
-isteğe bağlı: `Birim, Iskonto, KDV_Orani, Para_Birimi, Kur`.
+isteğe bağlı: `Birim, Iskonto, KDV_Orani, Para_Birimi, Kur, OTV_Tutari, Fatura_Tipi, Tevkifat_Orani, Yon`.
 `Fiyat` KDV hariç birim fiyattır. Aynı `Fatura_No + Tedarikci_VKN` satırları tek faturanın kalemleridir.
+
+- `OTV_Tutari`: satırın ÖTV tutarı (belge para biriminde; KDV matrahına eklenir, 9077 vergi koduyla saklanır).
+- `Fatura_Tipi`: `SATIS, IADE, TEVKIFAT, TEVKIFATIADE, ISTISNA, IHRACKAYITLI, OZELMATRAH` ya da `IHRACAT`
+  (ihracat senaryosu, istisna faturası). Bilinmeyen değer faturayı düşürmez: uyarıyla SATIS kabul edilir.
+- `Tevkifat_Orani`: `4/10`, `%40`, `40` ya da `0,4`; doluysa tevkifat = satır KDV'si × oran ve tip boşsa TEVKIFAT.
+- `Yon`: `Alış` / `Satış` (`Gelen` / `Giden`). **Satış satırlarında `Tedarikci_VKN` / `Tedarikci_Ad` alanlarına karşı
+  taraf (müşteri)** yazılır; satıcı olarak aktif firmanın VKN'si saklanır. Boşsa yön satıcı VKN'sinden bulunur.
 Bir faturanın herhangi bir satırı hatalıysa fatura eksik kaydedilmesin diye tamamen atlanır.
 
 **Yevmiye Excel** — zorunlu: `Tarih, Belge_No, Hesap_Kodu` ve `Borc + Alacak` *ya da* `Tutar`; isteğe bağlı `Aciklama`.
@@ -108,7 +117,15 @@ Fatura Excel'inde de `Fatura No`, `Fatura Tarihi`, `Satıcı VKN/TCKN`, `Satıc�
 | Belirsiz eşleşme (seri+sıra) | Kısaltılmış belge no birden fazla faturaya ya da fatura birden fazla belgeye uyuyor |
 | Olası mükerrer faturalar | Aynı tedarikçi, aynı tarih, aynı tutar, farklı numara (`Ardisik_Numara`: aynı serinin ardışık numaralarıysa "Evet"; bilgi amaçlı, ardışık olmayanlar önce sıralanır) |
 | Fatura hesaplama tutarsızlıkları | XML'de satır toplamları / iskonto / KDV ile belge toplamlarının uyuşmaması |
-| Alıcısı firma olmayan faturalar | XML'deki alıcı VKN'si firma VKN'sinden farklı |
+| Alıcısı firma olmayan faturalar | XML'deki alıcı VKN'si firma VKN'sinden farklı (yalnızca alış faturaları) |
+| KDV farkları | Alış faturasının KDV'si ile aynı belgenin KDV hesaplarındaki (191) kaydı farklı (olası neden sütunlu) |
+| KDV'si kaydedilmemiş faturalar | Faturada KDV var, belge yevmiyede var ama KDV hesabında kayıt yok (ör. KDV maliyete eklenmiş) |
+| Tevkifat kaydı eksik/farklı | Tevkifatlı alış faturasında tevkif edilen KDV tevkifat hesabına (360) alacak yazılmamış / yanlış tutar / ters yön |
+| Satış: muhasebeleşmemiş, gelir hesabı dışı, tutar, dönem, KDV farkları | Satış faturaları gelir (600–602) ve hesaplanan KDV (391) hesaplarıyla; aşağıya bakın |
+| Faturası bulunmayan gelir kayıtları | Gelir hesaplarında net alacak yönlü, hariç önekle başlamayan, hiçbir satış faturasıyla eşleşmeyen belgeler |
+
+Fiyat analizi, alış mutabakatı, mükerrer fatura ve alıcı VKN kontrolleri yalnızca **alış** faturalarına uygulanır;
+hesaplama tutarsızlığı kontrolü tüm XML faturalara uygulanır.
 
 ### Fiyat anomalileri
 
@@ -209,6 +226,56 @@ gösteren bir özet satırı yer alır; Excel raporunda **Faturasız Kayıt Öze
 - Kur toleransı firma başına saklanır (varsayılan **%1**; `0` → yüzde tolerans kapalı) ve **Muhasebe Mutabakatı**
   ile **Genel Denetim Raporu** ekranlarından düzenlenir.
 
+### Maliyete eklenen vergiler (ÖTV vb.)
+
+UBL-TR XML'de `TaxTotal` altındaki KDV (0015) dışındaki vergiler vergi türü koduyla ayrıştırılıp fatura başına
+saklanır (belge toplamında yoksa satırlardan toplanır). Bayi araç alımında olduğu gibi indirilemeyen vergiler maliyete
+eklenir; bu yüzden alış mutabakatında **beklenen maliyet = KDV hariç tutar + maliyete eklenen vergiler** (TL'ye fatura
+kuruyla çevrilir) olur. Tutar Farkları'nda `KDV_Haric_Tutar_TL`, `Maliyete_Eklenen_Vergi_TL`, `Beklenen_Tutar_TL` ve
+`Olasi_Neden` (ör. "Maliyete eklenecek vergi (ÖTV vb.) maliyete eklenmemiş", "KDV maliyete eklenmiş", "Çift kayıt")
+sütunları gösterilir.
+
+Maliyete eklenen vergi kodları firma başına düzenlenir (**Varsayılan** butonu; boş → hiçbir vergi eklenmez).
+Varsayılan: `0071, 0073–0077` ÖTV (I, III, IV), `9077` ÖTV II (motorlu taşıtlar), `4080, 4081` ÖİV, `0059` konaklama
+vergisi, `0021` BSMV, `4071, 8005` elektrik / havagazı tüketim vergisi, `8004` TRT payı, `8008` çevre temizlik vergisi.
+Stopajlar (0003, 0011) ve KDV tevkifatı maliyet değildir.
+
+### KDV (191) ve tevkifat (360) mutabakatı
+
+- Alış faturasının KDV'si (TL), mutabakatın bulduğu **aynı belge** (tam, seri+sıra, tutar+tarih ya da seçili hesap dışı
+  eşleşmesi) üzerinden KDV hesaplarındaki (varsayılan `191`) toplamla karşılaştırılır; muhasebeleşmemiş ve belirsiz
+  faturalar bu kontrole girmez. Dövizli faturada kur toleransı uygulanır.
+  - **KDV'si Kaydedilmemiş Faturalar:** faturada KDV var, belge yevmiyede var ama KDV hesabında satır yok.
+    `Olasi_Neden`: "KDV maliyete eklenmiş" (seçili hesaplardaki fark KDV kadar) ya da "KDV hesabında kayıt yok";
+    `Kullanilan_Hesaplar` belgenin yevmiyede geçtiği hesaplardır.
+  - **KDV Farkları:** KDV hesabındaki tutar farklı. `Olasi_Neden`: çift kayıt, faturada KDV yok, "191'e tevkifat
+    düşülmüş KDV yazılmış", ters yönde kayıt (yalnızca XML faturalarda; Excel'de iade tipi çoğu zaman bilinmez).
+- **Tevkifatlı faturalarda 191'e TAM KDV** yazılması doğrudur (indirilecek KDV); tevkif edilen kısım
+  (`WithholdingTaxTotal`, Excel'de `Tevkifat_Orani`) tevkifat hesaplarına (varsayılan `360`) **alacak** olarak
+  yazılmalıdır. **Tevkifat Kaydı Eksik/Farklı**: `Durum` = "Tevkifat kaydı yok", "Borç yönlü (ters) kayıt" ya da
+  "Tutar farklı". İade faturalarında yönler terstir.
+- Hesap kodu kutusu boş bırakılırsa ilgili kontrol yapılmaz. 360'ta stopaj gibi başka vergiler de izleniyorsa KDV
+  tevkifatı alt hesabını girin (ör. `360.02`).
+
+### Satış faturaları
+
+- **Yön:** Excel'de `Yon` verilmişse o; yoksa satıcı VKN'si aktif firmanın VKN'si olan faturalar **satış** (giden
+  e-fatura / e-arşiv), diğerleri alış. Firmanın kestiği **iade** faturaları alış iadesidir, alış sayılır. Firma VKN'si
+  girilmemişse XML satış faturaları ayırt edilemez (not düşülür).
+- **Satış mutabakatı** alış mutabakatıyla aynı eşleştirmeyi kullanır; gelir hesapları (varsayılan `600, 601, 602`) ile
+  KDV hariç tutar, hesaplanan KDV hesapları (varsayılan `391`) ile KDV karşılaştırılır. Satışta gelir **alacak**
+  tarafındadır. Karşı taraf sütunları `Musteri` / `Musteri_VKN`'dir.
+- **İhracat / istisna** (`ProfileID` IHRACAT, `InvoiceTypeCode` ISTISNA ya da IHRACKAYITLI) faturalarında KDV beklenmez;
+  bu faturalara 391 kaydı yazılmışsa bulgudur. Tevkifatlı satışta 391'e KDV − alıcının tevkif ettiği KDV beklenir.
+- Bölümler: **Muhasebeleşmemiş Satış Faturaları**, **Gelir Hesabı Dışına Kaydedilmiş Satış Faturaları**, **Satış Tutar
+  Farkları**, **Satış Dönem Farkları**, **Satış KDV Farkları** (`Durum`: hesaplanan KDV kaydı yok / istisna faturasında
+  KDV kaydı var / tutar farklı / ters yön), **Faturası Bulunmayan Gelir Kayıtları** (net alacak yönlü; hariç önek
+  listesi ve öncelik alış tarafıyla aynı) ve bilgi amaçlı belge no uyuşmayan / belirsiz satış eşleşmeleri. Raporda
+  **Satış Eşleşme Özeti**, **Faturasız Gelir Özeti**, **Satış Kur Farkı (Tolerans İçi)** ve (seçiliyse) **Faturasız
+  Gelir Listesinden Hariç Tutulanlar** sayfaları yer alır.
+- Gelir hesabı kutusu boşsa satış mutabakatı yapılmaz. Müşterinin kestiği iade (satıştan iade) faturası alış tarafında
+  değerlendirilir; 610'a kaydedildiği için "seçili hesap dışı" görünebilir.
+
 ## Bulgu inceleme (denetçi iş akışı)
 
 Fiyat Risk Analizi, Muhasebe Mutabakatı ve Genel Denetim Raporu sonuçları **Bulgular** sekmesinde satır seçilebilen
@@ -222,7 +289,8 @@ bir tabloda gösterilir (metin özeti **Özet (metin)** sekmesindedir). Akış:
 - Her bulgunun durumu (Açık / İncelendi – Sorun Yok / Düzeltme İstendi), notu ve tarihi firmanın veritabanında
   kalıcıdır. **Sorun yok olanları göster** kapalıyken (varsayılan) "sorun yok" işaretli bulgular tablodan gizlenir;
   özet sayılarında görünmeye devam eder.
-- **Bulgu kimliği kararlıdır:** kontrol türü + normalize tedarikçi VKN + normalize fatura no (faturasız kayıtta
+- **Bulgu kimliği kararlıdır:** kontrol türü + normalize tedarikçi VKN (satış bölümlerinde müşteri VKN) + normalize
+  fatura no (faturasız kayıtta / faturasız gelirde
   belge no, mükerrer grubunda sıralı fatura no listesi, fiyat anomalisinde ayrıca ürün adı, hesaplama kontrolünde
   kontrol adı). Tutar, eşik, tolerans, satır sırası ya da veritabanı kimliği anahtara girmez; bu yüzden rapor yeniden
   çalıştırıldığında, veriler silinip yeniden yüklendiğinde ya da kullanılan muhasebe dökümü değiştiğinde işaretler
@@ -240,6 +308,10 @@ bir tabloda gösterilir (metin özeti **Özet (metin)** sekmesindedir). Akış:
 - Aynı dosya farklı firmalara ayrı ayrı yüklenebilir (mükerrer dosya kontrolü firma bazındadır).
 - V1.1 veritabanı (`audit_data.db`) aktarılırken kopyası yeni şemaya taşınır; eski tablolar kopyada
   `*_v1_yedek` adıyla saklanır.
+- Şema sürümü 3 (madde 7): önceki sürümlerle oluşturulmuş firma veritabanları açılışta otomatik güncellenir
+  (`invoice_taxes` tablosu ve faturalara tevkifat / yön / vergi sütunları eklenir; veriler korunur). Önceki sürümle
+  yüklenmiş XML faturalarda ÖTV ve tevkifat bilgisi olmadığından genel raporda not düşülür; tam kontrol için verileri
+  silip XML'leri yeniden yükleyin.
 
 ## Proje yapısı
 
@@ -250,7 +322,7 @@ denetim/database.py    SQLite şeması, kayıt/okuma, eski sürüm taşıma
 denetim/export.py      Çok sayfalı Excel rapor çıktısı
 denetim/ubl.py         UBL-TR XML ayrıştırıcı
 denetim/importers.py   Excel/XML doğrulama, başlık satırı tespiti, sütun eşleme, satır bazlı hata raporu, şablonlar
-denetim/checks.py      Fiyat analizi, mutabakat ve tüm denetim kontrolleri
+denetim/checks.py      Fiyat analizi, alış / satış mutabakatı, KDV / tevkifat / ÖTV ve tüm denetim kontrolleri
 denetim/inceleme.py    Bulgu inceleme: kararlı bulgu anahtarı, durum/not kaydı, rapora uygulama ve özet
 denetim/utils.py       Sayı/tarih/metin/birim normalizasyonu
 tests/                 Birim testleri ve örnek XML

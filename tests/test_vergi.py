@@ -427,3 +427,18 @@ def test_firma_kestigi_iade_alis_sayilir_alici_kontrolu_yok(db):
     assert counts["alis_fatura"] == 1 and counts["satis"] is None
     assert sections["Alıcısı Firma Olmayan Faturalar"].empty and sections["Tutar Farkları"].empty
     assert sections["KDV Farkları"].empty
+
+
+def test_kdv_yonu_yalnizca_xml_faturada(db):
+    # Excel faturada tip bilinmediğinden iade faturası SATIS görünür: alacak yönlü 191 ters yön sayılmaz
+    df = pd.DataFrame([{"Fatura_No": "EXC2024000000001", "Tarih": "10.07.2024", "Tedarikci_VKN": TEDARIKCI_VKN,
+                        "Tedarikci_Ad": "X", "Urun_Adi": "Mal", "Miktar": 1, "Fiyat": 1000, "KDV_Orani": 20}])
+    db.save_invoices(importers.read_invoice_excel(xlsx(df)).items, "FATURA_EXCEL", "f.xlsx", "h0")
+    yukle(db, [ubl("XML2024000000001", net=1000)],
+          [yev("EXC2024000000001", "320.01", 1200), yev("EXC2024000000001", "153.01", alacak=1000),
+           yev("EXC2024000000001", "191.01", alacak=200),
+           yev("XML2024000000001", "320.01", 1200), yev("XML2024000000001", "153.01", alacak=1000),
+           yev("XML2024000000001", "191.01", alacak=200)])
+    res = checks.reconcile(db.get_invoices_df(), db.get_journal_df(), ["153"], kdv_hesaplari=["191"])
+    assert list(res["KDV Farkları"]["Fatura_No"]) == ["XML2024000000001"]
+    assert res["KDV Farkları"].iloc[0]["Olasi_Neden"] == checks.NEDEN_TERS_YON
