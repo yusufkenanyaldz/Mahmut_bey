@@ -19,19 +19,49 @@ python sim/metin.py      # her firmayı programın kodu ile denetler, sim/sonucl
 
 Rastgelelik sabit tohumla (`random.seed(2024)`) üretildiği için sonuçlar tekrarlanabilir.
 
-## Başlangıç ölçümü (v2.0)
+## Ölçümler
 
-| Kontrol | Yakalanan | Yanlış alarm |
-|---|---|---|
-| Muhasebeleşmemiş fatura | 46/46 | 998 |
-| Yanlış hesaba kayıt | 51/57 | 0 |
-| Tutar farkı | 70/77 | 206 |
-| Dönem kayması | 34/43 | 0 |
-| Faturasız gider kaydı | 52/52 | 1.404 |
-| Mükerrer fatura | 41/41 | 259 |
-| Fiyat şişirme | 41/41 | 816 |
-| Başka firmaya kesilmiş fatura | 20/20 | 0 |
-| XML hesaplama hatası | 8/8 | 0 |
-| **Toplam** | **363/385** | **3.683** |
+`metin.py` çalışmanın sonunda kontrol bazında toplamları, belge no biçimine göre kırılımı ve eşleştirme
+yöntemlerinin dağılımını yazdırır. Yalnızca bilgi amaçlı bölümler ("Belge No Uyuşmayan Eşleşmeler",
+"Belirsiz Eşleşme (Birden Fazla Seri+Sıra Adayı)") bilinen bir hatayı temsil etmediği için puanlamaya
+katılmaz, yanlış alarm sayılmaz; `sonuclar.json` içinde firma başına `bilgi` alanında ayrıca raporlanır.
+
+| Kontrol | v2.0 yakalanan | v2.0 yanlış alarm | Madde 2 sonrası yakalanan | Madde 2 sonrası yanlış alarm |
+|---|---|---|---|---|
+| Muhasebeleşmemiş fatura | 46/46 | 998 | 46/46 | 0 |
+| Yanlış hesaba kayıt | 51/57 | 0 | 57/57 | 0 |
+| Tutar farkı | 70/77 | 206 | 77/77 | 272 |
+| Dönem kayması | 34/43 | 0 | 43/43 | 0 |
+| Faturasız gider kaydı | 52/52 | 1.404 | 52/52 | 412 |
+| Mükerrer fatura | 41/41 | 259 | 41/41 | 259 |
+| Fiyat şişirme | 41/41 | 816 | 41/41 | 816 |
+| Başka firmaya kesilmiş fatura | 20/20 | 0 | 20/20 | 0 |
+| XML hesaplama hatası | 8/8 | 0 | 8/8 | 0 |
+| **Toplam** | **363/385** | **3.683** | **385/385** | **1.759** |
+
+Firma seçici (madde 1) sonuçları değiştirmedi; v2.0 sütunu madde 1 sonrası için de geçerlidir.
+
+**Madde 2 (akıllı belge no eşleştirme)** — belge no biçimine göre:
+
+| Belge no biçimi | Firma | v2.0 yakalanan / yanlış alarm | Madde 2 sonrası yakalanan / yanlış alarm |
+|---|---|---|---|
+| tam (`ABC2024000000123`) | 28 | 273/273 / 1.063 | 273/273 / 1.063 |
+| boşluklu (`ABC 2024 000000123`) | 8 | 73/73 / 499 | 73/73 / 499 |
+| kısa (`ABC123`) | 4 | 17/39 / 2.121 | 39/39 / 197 |
+
+- Eşleştirme dağılımı (40 firma): Tam 10.912, Seri+Sıra 992 (kısa biçimli 4 firmanın tüm faturaları),
+  Tutar+Tarih 0, seçili hesap dışı 57, belirsiz 0, eşleşmeyen 46.
+- "Belge No Uyuşmayan Eşleşmeler" bölümü bu simülasyonda boş kalıyor: kısa biçimli belge numaraları seri+sıra
+  kademesinde eşleştiği için tutar+tarih yedeğine hiç kalmıyor (beklenen doluluk bu firmalarda seri+sıra
+  eşleşmesi olarak görünür).
+- Tutar farkındaki +66 yanlış alarm yeni değil: kısa biçimli iki taşımacılık firmasındaki dövizli yakıt
+  faturalarının kur farkı (diğer taşımacılık firmalarında zaten görünen tür); bu faturalar önceden hiç
+  eşleşmediği için "muhasebeleşmemiş" yanlış alarmı olarak sayılıyordu.
+- Kalan faturasız kayıt yanlış alarmları bordro/amortisman/SMM/gider pusulası kayıtlarıdır (madde 3 kapsamı).
+- Tutar+tarih kademesinin ayrı stres testi: 14 firmada fatura belgelerinin %30'unun numarası tamamen bozuldu
+  (ör. `FIS123456X`); 925 bozuk belgenin 822'si tutar+tarih ile eşleşti, **yanlış eşleşme 0**, gerçek
+  muhasebeleşmemiş faturalardan kaçan yok. Eşleşmeyen 103 fatura, tutarı tutmadığı (tutar farkı, KDV dahil
+  kayıt, dövizli kur farkı) ya da aynı tutarlı birden fazla aday olduğu (aynı gün aynı araç alımı) için
+  güvenli biçimde eşleştirilmedi ve muhasebeleşmemiş olarak raporlandı (bu test kalıcı değildir, elle yapıldı).
 
 Elle düzeltme gereken yevmiye dosyası: 22/40 (9 belge no açıklamada, 8 başlık satırı, 5 sütun adı).

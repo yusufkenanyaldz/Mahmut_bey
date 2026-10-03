@@ -65,18 +65,41 @@ Sütun başlıklarında Türkçe karakter, boşluk ve büyük/küçük harf fark
 | Kontrol | Açıklama |
 |---|---|
 | Fiyat anomalileri | Dönem (aylık/çeyreklik/yıllık) + ürün + birim bazında ağırlıklı ortalama birim fiyattan, kullanıcının belirlediği % eşiği aşan sapmalar (TL, KDV hariç, iadeler hariç) |
-| Muhasebeleşmemiş faturalar | Belge numarası yevmiyede hiç geçmeyen faturalar |
-| Seçili hesap dışına kaydedilmiş | Yevmiyede var ama girilen hesap kodlarında değil (yanlış hesap şüphesi) |
+| Muhasebeleşmemiş faturalar | Yevmiyede hiçbir yöntemle (aşağıya bakın) karşılığı bulunamayan faturalar |
+| Seçili hesap dışına kaydedilmiş | Belge no (tam ya da seri+sıra) yevmiyede var ama girilen hesap kodlarında değil (yanlış hesap şüphesi) |
 | Tutar farkları | Fatura KDV hariç tutarı ile seçili hesaplardaki yevmiye toplamı arasındaki tolerans üstü farklar |
 | Dönem farkları | Fatura dönemi ile yevmiye kayıt dönemi farklı |
-| Faturası bulunmayan yevmiye kayıtları | Seçili hesaplarda olup sistemde faturası olmayan belgeler |
-| Belirsiz eşleşme | Aynı fatura numarası birden fazla tedarikçide (yevmiyede VKN olmadığından eşleşme belirsiz) |
+| Belge no uyuşmayan eşleşmeler | Belge no tutmadığı için tutar + tarih ile eşleştirilen faturalar (belge no yazım hatası; kontrol edin) |
+| Faturası bulunmayan yevmiye kayıtları | Seçili hesaplarda olup hiçbir yöntemle bir faturayla eşleşmeyen belgeler |
+| Belirsiz eşleşme (aynı no) | Aynı fatura numarası birden fazla tedarikçide (yevmiyede VKN olmadığından eşleşme belirsiz) |
+| Belirsiz eşleşme (seri+sıra) | Kısaltılmış belge no birden fazla faturaya ya da fatura birden fazla belgeye uyuyor |
 | Olası mükerrer faturalar | Aynı tedarikçi, aynı tarih, aynı tutar, farklı numara |
 | Fatura hesaplama tutarsızlıkları | XML'de satır toplamları / iskonto / KDV ile belge toplamlarının uyuşmaması |
 | Alıcısı firma olmayan faturalar | XML'deki alıcı VKN'si firma VKN'sinden farklı |
 
 **Mutabakat notu:** Hesap kodları önek olarak eşleşir (`153` → `153.01`, `153.02.001` …).
 Aynı belgenin karşı hesaplarını (ör. `153` ile `320`) birlikte girmeyin; Borç − Alacak toplamı sıfırlanır.
+
+**Fatura no ↔ belge no eşleştirmesi** sırayla üç kademede yapılır; sonuçlarda `Eslesme_Yontemi` sütunu
+hangi kademenin kullanıldığını gösterir:
+
+1. **Tam** — boşluklar atılmış, büyük harfe çevrilmiş fatura no ile belge no aynı.
+2. **Seri+Sıra** — GİB fatura numarası 3 karakter seri + 4 hane yıl + 9 hane sıra numarasıdır
+   (`ABC2024000000123`). Ayraçlar (boşluk, `-`, `/`, `.`, `_`) temizlenip seri, yıl (yazılmışsa) ve sıra
+   numarası (tamsayı) çıkarılır; seri ve sıra aynıysa, yıl iki tarafta da yazılmışsa o da aynıysa eşleşir.
+   Böylece `ABC123`, `ABC-123`, `ABC 2024 123`, `ABC2024123` yazımları `ABC2024000000123` ile eşleşir.
+   Yalnızca tek aday varsa eşleştirilir; birden fazla aday (ör. yılsız `ABC123` hem 2023 hem 2024 faturasına
+   uyuyorsa) **Belirsiz eşleşme (seri+sıra)** bölümüne yazılır.
+3. **Tutar+Tarih** (düşük güven) — belge numarası yevmiyenin hiçbir yerinde bulunamayan faturalar için:
+   seçili hesaplarda eşleşmemiş belgelerden aynı tutarı (tolerans dahilinde) taşıyan ve tarihi faturadan en çok
+   ±15 gün uzakta olan **tek** aday varsa eşleştirilir. Bu eşleşmeler ayrıca **Belge no uyuşmayan eşleşmeler**
+   bölümünde listelenir; belge numarasının yanlış yazılması da bir bulgudur.
+
+Seçili hesap dışı kontrolü 3. kademeden önce, tam ve seri+sıra eşleşmesiyle yapılır (belge no başka hesapta
+bulunan fatura tutar+tarih ile seçili hesaptaki başka bir kayda bağlanmaz). Herhangi bir kademede eşleşen ya da
+belirsiz adayı olan belge "faturası bulunmayan" sayılmaz. Mutabakat ekranının başında ve genel raporda kaç
+faturanın hangi yöntemle eşleştiğini gösteren özet satırı yer alır; Excel raporunda **Eşleşme Özeti** sayfası
+olarak da çıkar.
 
 ## Veri güvenliği
 

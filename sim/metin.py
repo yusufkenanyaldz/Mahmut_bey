@@ -14,6 +14,7 @@ from denetim.export import export_sections  # noqa: E402
 from denetim.firms import FirmRegistry  # noqa: E402
 from denetim.utils import normalize_doc_no, parse_account_list  # noqa: E402
 
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 FIRMS = os.path.join(BASE, "firmalar")
 WORK = os.path.join(BASE, "calisma")
@@ -29,6 +30,12 @@ SECTION_TRUTH = {
     "Fiyat Anomalileri": ["fiyat_sisirme"],
     "Alıcısı Firma Olmayan Faturalar": ["baska_firma_faturasi"],
     "Fatura Hesaplama Tutarsızlıkları": ["xml_hesap_hatasi"],
+}
+# Bilinen bir hatayı temsil etmeyen, bilgi amaçlı bölümler: yanlış alarm sayılmaz, ayrıca raporlanır.
+# "Belge No Uyuşmayan Eşleşmeler" belge_style="kisa" vb. firmalarda dolabilir (belge no yazım hatası bulgusu).
+INFO_SECTIONS = {
+    "Belge No Uyuşmayan Eşleşmeler": "belge_no_uyusmayan",
+    "Belirsiz Eşleşme (Birden Fazla Seri+Sıra Adayı)": "belirsiz_seri_sira",
 }
 # Elle müdahale süresi tahmini (dakika)
 FRICTION_MIN = {"baslik_satiri": 5, "sutun_adi": 5, "belge_no_aciklamada": 20, "firma_degisimi": 3}
@@ -155,6 +162,49 @@ def score(meta, sections):
     return res, fp_causes
 
 
+def info(sections):
+    """Bilgi amaçlı bölüm sayıları ve tutar+tarih eşleşmelerinin belge no anahtarına göre doğruluğu."""
+    out = {}
+    for title, df in sections.items():
+        key = next((v for k, v in INFO_SECTIONS.items() if title.startswith(k)), None)
+        if key is None:
+            continue
+        out[key] = len(df)
+        if key == "belge_no_uyusmayan" and not df.empty:
+            # Simülasyonda belge no fatura no'dan türetilir: anahtarlar uyuşuyorsa eşleşme doğrudur
+            ok = sum(1 for _, r in df.iterrows()
+                     if any(checks.anahtar_uyumlu(a, b) for a in checks.belge_anahtarlari(r["Fatura_No"])
+                            for b in checks.belge_anahtarlari(r["Yevmiye_Belge_No"])))
+            out["belge_no_uyusmayan_anahtar_uyumsuz"] = len(df) - ok
+    return out
+
+
+def print_totals(all_results):
+    """Kontrol bazında toplam yakalama / yanlış alarm ve belge no biçimine göre kırılım."""
+    tot = defaultdict(lambda: [0, 0, 0])
+    style = defaultdict(lambda: [0, 0, 0, 0])
+    bilgi = defaultdict(Counter)
+    yontem = Counter()
+    for r in all_results:
+        for k, v in r["score"].items():
+            t = tot[k]
+            t[0] += v["bulunan"]; t[1] += v["beklenen"]; t[2] += v["yanlis_alarm"]
+            st = style[r["belge"]]
+            st[0] += v["bulunan"]; st[1] += v["beklenen"]; st[2] += v["yanlis_alarm"]
+        style[r["belge"]][3] += 1
+        bilgi[r["belge"]].update(r.get("bilgi", {}))
+        yontem.update(r.get("eslesme") or {})
+    print("\nKontrol bazında toplam")
+    for k, (a, b, c) in tot.items():
+        print(f"  {k:45s} {a:3d}/{b:3d}  yanlış alarm={c:5d}")
+    print(f"  {'TOPLAM':45s} {sum(v[0] for v in tot.values()):3d}/{sum(v[1] for v in tot.values()):3d}  "
+          f"yanlış alarm={sum(v[2] for v in tot.values()):5d}")
+    print("Belge no biçimine göre")
+    for k, (a, b, c, n) in style.items():
+        print(f"  {k:9s} firma={n:2d} yakalanan={a:3d}/{b:3d} yanlış alarm={c:5d} bilgi={dict(bilgi[k])}")
+    print("Eşleştirme yöntemleri:", dict(yontem))
+
+
 def main():
     metas = json.load(open(os.path.join(FIRMS, "firmalar.json"), encoding="utf-8"))
     all_results = []
@@ -174,8 +224,11 @@ def main():
         summary, sections, notes, counts = checks.run_full_audit(db, "Aylık", 15.0, accounts, 0.01, firm.vkn)
         log["t_audit"] = round(time.time() - t, 1)
         export_sections(os.path.join(WORK, f"{meta['code']}_Denetim_Raporu.xlsx"),
-                        dict([("Özet", summary)] + list(sections.items())))
+                        dict([("Özet", summary), ("Eşleşme Özeti", checks.eslesme_ozeti_df(counts["eslesme"]))]
+                             + list(sections.items())))
         sc, fp = score(meta, sections)
+        log["eslesme"] = dict(counts["eslesme"] or {})
+        log["bilgi"] = info(sections)
         # Metin'in ikinci denemesi: dövizli firmalarda tolerans 50 TL
         if meta["foreign_invoices"]:
             _, sec2, _, _ = checks.run_full_audit(db, "Aylık", 15.0, accounts, 50.0, firm.vkn)
@@ -197,7 +250,9 @@ def main():
         fpn = sum(v["yanlis_alarm"] for v in sc.values())
         print(f"{meta['code']} {meta['sector'][:12]:12s} fatura={log['added']:5d} yevmiye={log['journal_rows']:5d} "
               f"elle={','.join(log['friction']) or '-':32s} yakalanan={tp:3d}/{ex:3d} yanlış_alarm={fpn:4d} "
+              f"belge_no_uyuşmayan={log['bilgi'].get('belge_no_uyusmayan', 0):3d} "
               f"süre(xml/j/rapor)={log['t_xml']}/{log['t_journal']}/{log['t_audit']}s")
+    print_totals(all_results)
     json.dump(all_results, open(os.path.join(BASE, "sonuclar.json"), "w", encoding="utf-8"), ensure_ascii=False,
               indent=1, default=str)
 

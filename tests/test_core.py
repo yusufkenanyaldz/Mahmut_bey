@@ -149,6 +149,133 @@ def test_reconcile(db):
     assert list(res["Faturası Bulunmayan Yevmiye Kayıtları"]["Yevmiye_Belge_No"]) == ["F99"]
 
 
+# ------------------------------------------------------------------ Belge no eşleştirme
+@pytest.mark.parametrize("raw,expected", [
+    ("ABC2024000000123", [("ABC", 2024, 123)]),
+    ("abc 2024 000000123", [("ABC", 2024, 123)]),
+    ("ABC-2024-123", [("ABC", 2024, 123)]),
+    ("ABC 2024 123", [("ABC", 2024, 123)]),
+    ("ABC123", [("ABC", None, 123)]),
+    ("ABC-123", [("ABC", None, 123)]),
+    ("ABC2024123", [("ABC", 2024, 123), ("ABC", None, 2024123)]),
+    ("BORDRO-2024-07", []), ("GP-07001", []), ("F1", []), ("", []), (None, []),
+])
+def test_belge_anahtarlari(raw, expected):
+    assert checks.belge_anahtarlari(raw) == expected
+
+
+def test_anahtar_uyumlu():
+    assert checks.anahtar_uyumlu(("ABC", 2024, 123), ("ABC", None, 123))
+    assert checks.anahtar_uyumlu(("ABC", 2024, 123), ("ABC", 2024, 123))
+    assert not checks.anahtar_uyumlu(("ABC", 2024, 123), ("ABC", 2023, 123))
+    assert not checks.anahtar_uyumlu(("ABC", 2024, 123), ("ABD", 2024, 123))
+
+
+@pytest.mark.parametrize("belge", ["ABC123", "ABC-123", "ABC 2024 123", "ABC2024123", "abc-2024-000000123"])
+def test_seri_sira_tek_aday(belge):
+    eslesen, belirsiz = checks.seri_sira_eslestir({1: "ABC2024000000123", 2: "XYZ2024000000123"},
+                                                  {"B": belge, "C": "BORDRO-2024-07"})
+    assert eslesen == {1: "B"} and belirsiz == {}
+
+
+def test_seri_sira_ayni_seri_farkli_sira_ve_farkli_yil():
+    eslesen, belirsiz = checks.seri_sira_eslestir({1: "ABC2024000000123"},
+                                                  {"B": "ABC124", "C": "ABC-2023-123", "D": "ABD123"})
+    assert eslesen == {} and belirsiz == {}
+
+
+def test_seri_sira_belirsiz():
+    # Fatura için iki aday belge
+    eslesen, belirsiz = checks.seri_sira_eslestir({1: "ABC2024000000123"}, {"B": "ABC123", "C": "ABC-123 "})
+    assert eslesen == {} and belirsiz == {1: ["B", "C"]}
+    # Yılsız belge iki farklı yılın faturasına uyuyor
+    eslesen, belirsiz = checks.seri_sira_eslestir({1: "ABC2023000000123", 2: "ABC2024000000123"}, {"B": "ABC123"})
+    assert eslesen == {} and belirsiz == {1: ["B"], 2: ["B"]}
+
+
+def test_tutar_tarih_eslestir():
+    faturalar = {1: ("2024-07-10", 1000.0), 2: ("2024-07-10", 500.0), 3: ("2024-07-10", 750.0)}
+    belgeler = {"A": ("2024-07-20", -1000.004),   # tutar (mutlak) ve tarih tutuyor → tek aday
+                "B": ("2024-08-01", 500.0),      # 22 gün → pencere dışı
+                "C": ("2024-07-12", 750.0), "D": ("2024-07-14", 750.0)}  # iki aday → belirsiz
+    eslesen, belirsiz = checks.tutar_tarih_eslestir(faturalar, belgeler, tolerance=0.01)
+    assert eslesen == {1: "A"} and belirsiz == {3: ["C", "D"]}
+    assert checks.tutar_tarih_eslestir({1: ("2024-07-10", 1000.0)}, {"A": ("2024-07-10", 1000.5)}, 0.01) == ({}, {})
+
+
+def _gib_scenario():
+    def fatura(no, tarih, vkn, tutar):
+        return {"invoice_no": no, "invoice_no_norm": no.upper(), "issue_date": tarih, "supplier_vkn": vkn,
+                "supplier_name": vkn, "total_amount": tutar, "exchange_rate": 1.0, "invoice_type": "SATIS"}
+
+    def kayit(tarih, belge, hesap, tutar):
+        return {"entry_date": tarih, "document_no": belge, "document_no_norm": belge.replace(" ", "").upper(),
+                "account_code": hesap, "account_norm": hesap.replace(".", ""), "amount": tutar}
+
+    invoices = pd.DataFrame([
+        fatura("ABC2024000000001", "2024-07-01", "111", 1000),   # tam
+        fatura("ABC2024000000002", "2024-07-02", "111", 2000),   # seri+sıra (ABC2)
+        fatura("ABC2024000000003", "2024-07-03", "111", 3000),   # seri+sıra (ABC-2024-3) + tutar farkı
+        fatura("XYZ2024000000010", "2024-07-04", "222", 4000),   # tutar+tarih (belge no tamamen farklı)
+        fatura("XYZ2024000000011", "2024-07-05", "222", 5000),   # seri+sıra ile başka hesapta
+        fatura("XYZ2024000000012", "2024-07-06", "222", 6000),   # muhasebeleşmemiş
+        fatura("KLM2024000000005", "2024-07-07", "333", 7000),   # iki aday → belirsiz
+    ])
+    journal = pd.DataFrame([
+        kayit("2024-07-01", "ABC2024000000001", "153.01", 1000),
+        kayit("2024-07-02", "ABC2", "153.01", 2000),
+        kayit("2024-07-03", "ABC-2024-3", "153.01", 3100),
+        kayit("2024-07-10", "FIS-778", "153.01", 4000),
+        kayit("2024-07-05", "XYZ11", "689.01", 5000),
+        kayit("2024-07-07", "KLM5", "153.01", 7000),
+        kayit("2024-07-07", "KLM 2024 5", "153.01", 7000),
+        kayit("2024-07-31", "BORDRO-2024-07", "153.01", 9000),
+    ])
+    return invoices, journal
+
+
+def test_reconcile_kademeli_eslestirme():
+    invoices, journal = _gib_scenario()
+    res = checks.reconcile(invoices, journal, ["153"])
+    assert list(res["Muhasebeleşmemiş Faturalar"]["Fatura_No"]) == ["XYZ2024000000012"]
+    other = res["Seçili Hesap Dışına Kaydedilmiş Faturalar"]
+    assert list(other["Fatura_No"]) == ["XYZ2024000000011"]
+    assert other["Yevmiye_Belge_No"].iloc[0] == "XYZ11" and other["Eslesme_Yontemi"].iloc[0] == "Seri+Sıra"
+    assert other["Kullanilan_Hesaplar"].iloc[0] == "689.01"
+    diff = res["Tutar Farkları"]
+    assert list(diff["Fatura_No"]) == ["ABC2024000000003"] and diff["Eslesme_Yontemi"].iloc[0] == "Seri+Sıra"
+    weak = res["Belge No Uyuşmayan Eşleşmeler (Kontrol Edin)"]
+    assert list(weak["Fatura_No"]) == ["XYZ2024000000010"] and weak["Yevmiye_Belge_No"].iloc[0] == "FIS-778"
+    assert list(weak["Eslesme_Yontemi"]) == ["Tutar+Tarih"]
+    multi = res["Belirsiz Eşleşme (Birden Fazla Seri+Sıra Adayı)"]
+    assert list(multi["Fatura_No"]) == ["KLM2024000000005"] and multi["Aday_Belgeler"].iloc[0] == "KLM 2024 5, KLM5"
+    # Herhangi bir yöntemle eşleşen ya da belirsiz adayı olan belge faturasız sayılmaz
+    assert list(res["Faturası Bulunmayan Yevmiye Kayıtları"]["Yevmiye_Belge_No"]) == ["BORDRO-2024-07"]
+    assert dict(res.eslesme_ozeti) == {"Tam": 1, "Seri+Sıra": 2, "Tutar+Tarih": 1, "Seçili hesap dışı": 1,
+                                       "Belirsiz": 1, "Eşleşmeyen": 1}
+    assert "Seri+Sıra: 2" in checks.eslesme_ozeti_metni(res.eslesme_ozeti)
+    assert list(checks.eslesme_ozeti_df(res.eslesme_ozeti)["Fatura_Sayisi"]) == [1, 2, 1, 1, 1, 1]
+
+
+def test_reconcile_tutar_tarih_yanlis_hesabi_gizlemez():
+    """Belge no'su başka hesapta olan fatura, seçili hesapta aynı tutarlı kayıt varsa da yanlış hesaptadır."""
+    invoices, journal = _gib_scenario()
+    extra = journal.iloc[[0]].assign(document_no="ZZZ-1", document_no_norm="ZZZ-1", entry_date="2024-07-06",
+                                     amount=5000)
+    res = checks.reconcile(invoices, pd.concat([journal, extra], ignore_index=True), ["153"])
+    assert "XYZ2024000000011" in list(res["Seçili Hesap Dışına Kaydedilmiş Faturalar"]["Fatura_No"])
+    assert "ZZZ-1" in list(res["Faturası Bulunmayan Yevmiye Kayıtları"]["Yevmiye_Belge_No"])
+
+
+def test_reconcile_tutar_tarih_belirsiz_aday():
+    invoices, journal = _gib_scenario()
+    extra = journal.iloc[[3]].assign(document_no="FIS-779", document_no_norm="FIS-779")
+    res = checks.reconcile(invoices, pd.concat([journal, extra], ignore_index=True), ["153"])
+    assert res["Belge No Uyuşmayan Eşleşmeler (Kontrol Edin)"].empty
+    assert "XYZ2024000000010" in list(res["Muhasebeleşmemiş Faturalar"]["Fatura_No"])
+    assert {"FIS-778", "FIS-779"} <= set(res["Faturası Bulunmayan Yevmiye Kayıtları"]["Yevmiye_Belge_No"])
+
+
 def test_price_anomalies_threshold_and_period(db):
     _load_scenario(db)
     lines = db.get_lines_df()
@@ -160,11 +287,13 @@ def test_price_anomalies_threshold_and_period(db):
 
 def test_full_audit(db):
     _load_scenario(db)
-    summary, sections, notes, _ = checks.run_full_audit(db, "Aylık", 15, ["153"], 0.01, "")
+    summary, sections, notes, sayilar = checks.run_full_audit(db, "Aylık", 15, ["153"], 0.01, "")
     counts = dict(zip(summary["Kontrol"], summary["Bulgu_Sayisi"]))
     assert counts["Olası Mükerrer Faturalar"] == 1
     assert counts["Muhasebeleşmemiş Faturalar"] == 1
     assert any("Firma VKN" in n for n in notes)
+    assert counts["Belge No Uyuşmayan Eşleşmeler (Kontrol Edin)"] == 0
+    assert sayilar["eslesme"]["Tam"] == 4 and sayilar["eslesme"]["Eşleşmeyen"] == 1
 
 
 def test_xml_import_and_customer_check(db):

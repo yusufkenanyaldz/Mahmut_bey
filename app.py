@@ -692,7 +692,9 @@ class AuditApp(ctk.CTk):
         self.clear_main_frame()
         self.create_header("Fatura ve Yevmiye Mutabakatı",
                            "Faturaların KDV HARİÇ tutarları, girdiğiniz hesap kodlarındaki yevmiye kayıtlarıyla "
-                           "Belge_No = Fatura_No eşleşmesi üzerinden karşılaştırılır. Hesap kodları önek olarak "
+                           "karşılaştırılır. Fatura no ↔ belge no sırasıyla: Tam eşleşme, Seri+Sıra (ABC123, "
+                           "ABC-2024-123 gibi kısaltılmış yazımlar) ve son çare olarak tek adaylı Tutar+Tarih "
+                           f"(±{checks.TARIH_PENCERESI_GUN} gün, düşük güven) ile eşleştirilir. Hesap kodları önek olarak "
                            "eşleşir (153 → 153.01, 153.02 ...). Aynı belgenin karşı hesaplarını (ör. 153 ile 320) "
                            "birlikte girmeyin; toplamlar birbirini sıfırlar.")
         opts = self.create_button_row()
@@ -724,9 +726,12 @@ class AuditApp(ctk.CTk):
             self.log(box, "[UYARI] İşlem yapılamadı. Hem Fatura hem de Yevmiye kayıtlarının yüklü olduğundan "
                           "emin olun.", "uyari")
             return
-        self.recon_sections = checks.reconcile(invoices, journal, accounts, tolerance, self.recon_period_var.get())
-        self.log(box, f"> Hesaplar: {', '.join(accounts)}  |  Tolerans: {tolerance:g} TL\n")
-        for title, df in self.recon_sections.items():
+        res = checks.reconcile(invoices, journal, accounts, tolerance, self.recon_period_var.get())
+        self.recon_sections = OrderedDict([("Eşleşme Özeti", checks.eslesme_ozeti_df(res.eslesme_ozeti))]
+                                          + list(res.items()))
+        self.log(box, f"> Hesaplar: {', '.join(accounts)}  |  Tolerans: {tolerance:g} TL")
+        self.log(box, f"> {checks.eslesme_ozeti_metni(res.eslesme_ozeti)}\n")
+        for title, df in res.items():
             self.log_section(box, tr_upper(title), df)
 
     def export_sections_dialog(self, sections, default_name):
@@ -777,8 +782,14 @@ class AuditApp(ctk.CTk):
             self.audit_sections = None
             self.log(box, "[BİLGİ] Veritabanında fatura bulunamadı.", "uyari")
             return
-        self.audit_sections = OrderedDict([("Özet", summary)] + list(sections.items()))
-        self.log(box, f"> {counts['fatura']} fatura, {counts['yevmiye']} yevmiye satırı incelendi.\n")
+        head = [("Özet", summary)]
+        if counts["eslesme"]:
+            head.append(("Eşleşme Özeti", checks.eslesme_ozeti_df(counts["eslesme"])))
+        self.audit_sections = OrderedDict(head + list(sections.items()))
+        self.log(box, f"> {counts['fatura']} fatura, {counts['yevmiye']} yevmiye satırı incelendi.")
+        if counts["eslesme"]:
+            self.log(box, f"> {checks.eslesme_ozeti_metni(counts['eslesme'])}")
+        self.log(box, "")
         self.log(box, "ÖZET", "baslik")
         for _, r in summary.iterrows():
             tag = "ok" if r["Bulgu_Sayisi"] == 0 else "hata"
