@@ -32,6 +32,8 @@ SECTION_TRUTH = {
     "Fatura Hesaplama Tutarsızlıkları": ["xml_hesap_hatasi"],
 }
 FATURASIZ = "Faturası Bulunmayan Yevmiye Kayıtları"
+ESIKLER = (10, 15, 25, 35)
+MIN_ALIMLAR = (1, 2, 3, 4, 5)
 # Bilinen bir hatayı temsil etmeyen, bilgi amaçlı bölümler: yanlış alarm sayılmaz, ayrıca raporlanır.
 # "Belge No Uyuşmayan Eşleşmeler" belge_style="kisa" vb. firmalarda dolabilir (belge no yazım hatası bulgusu).
 INFO_SECTIONS = {
@@ -168,6 +170,15 @@ def score(meta, sections):
     return res, fp_causes
 
 
+def fiyat_puani(meta, lines, threshold, kurallar):
+    """Fiyat şişirme yakalama / yanlış alarm (fatura bazında) ve eşik üstü olup yetersiz veri sayılan satırlar."""
+    res = checks.fiyat_analizi(lines, "Aylık", threshold, kurallar)
+    exp = {normalize_doc_no(x) for x in meta["truth"]["fiyat_sisirme"]}
+    got = {normalize_doc_no(x) for x in res.riskli["Fatura_No"]}
+    return {"bulunan": len(exp & got), "beklenen": len(exp), "yanlis_alarm": len(got - exp),
+            "yetersiz_veri": res.ozet["yetersiz_veri"]}
+
+
 def info(sections):
     """Bilgi amaçlı bölüm sayıları ve tutar+tarih eşleşmelerinin belge no anahtarına göre doğruluğu."""
     out = {}
@@ -218,6 +229,25 @@ def print_totals(all_results):
           f"işaretsiz yevmiye={sum(1 for r in all_results if not r['faturasiz_ozeti']['isaretli'])}")
     print(f"Faturasız kayıt, boş önek listesiyle (yalnızca borç yönü): {bos[0]}/{bos[1]} yanlış alarm={bos[2]} "
           f"(Yüksek öncelikli: {sum(r['onek_bos_faturasiz']['yuksek_oncelik'] for r in all_results)})")
+    fo = Counter()
+    for r in all_results:
+        fo.update({k: v for k, v in r["fiyat_ozeti"].items() if isinstance(v, int) and not isinstance(v, bool)})
+    print(f"Fiyat analizi (varsayılan kurallar): incelenen={fo['incelenen']} riskli={fo['riskli']} analiz dışı: "
+          f"iade={fo['iade']}, miktar={fo['miktar']}, tevkifat={fo['tevkifat']}, anahtar kelime={fo['kelime']}  "
+          f"yetersiz veri={fo['yetersiz_veri']}")
+
+    def topla(alan, anahtar):
+        return [sum(r[alan][anahtar][k] for r in all_results)
+                for k in ("bulunan", "beklenen", "yanlis_alarm", "yetersiz_veri")]
+    print("Fiyat şişirme eşik duyarlılığı (yakalanan / yanlış alarm [yetersiz veri satırı])")
+    for th in ESIKLER:
+        a, b = topla("esik", th), topla("esik_kelimesiz", th)
+        print(f"  %{th:<3d} varsayılan kelimeler: {a[0]}/{a[1]} yanlış alarm={a[2]:4d} [{a[3]}]   "
+              f"boş kelime listesi: {b[0]}/{b[1]} yanlış alarm={b[2]:4d} [{b[3]}]")
+    print("Fiyat şişirme, en az alım sayısına göre (%15, varsayılan kelimeler)")
+    for n in MIN_ALIMLAR:
+        a = topla("min_alim", n)
+        print(f"  en az {n}: {a[0]}/{a[1]} yanlış alarm={a[2]:4d} yetersiz veri satırı={a[3]}")
     elle = Counter(f for r in all_results for f in r["friction"])
     n_elle = sum(1 for r in all_results if r["friction"])
     print(f"Elle müdahale gereken yevmiye dosyası: {n_elle}/{len(all_results)} {dict(elle)}  "
@@ -244,9 +274,11 @@ def main():
         log["t_audit"] = round(time.time() - t, 1)
         export_sections(os.path.join(WORK, f"{meta['code']}_Denetim_Raporu.xlsx"),
                         dict([("Özet", summary), ("Eşleşme Özeti", checks.eslesme_ozeti_df(counts["eslesme"])),
-                              ("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(counts["faturasiz_ozeti"]))]
+                              ("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(counts["faturasiz_ozeti"])),
+                              ("Fiyat Analizi Özeti", checks.fiyat_ozeti_df(counts["fiyat_ozeti"]))]
                              + list(sections.items())
-                             + [("Faturasız Listeden Hariç Tutulanlar", counts["faturasiz_haric"])]))
+                             + [("Faturasız Listeden Hariç Tutulanlar", counts["faturasiz_haric"]),
+                                ("Fiyat Analizi Dışı Satırlar", counts["fiyat_haric"])]))
         sc, fp = score(meta, sections)
         log["faturasiz_ozeti"] = {k: v for k, v in counts["faturasiz_ozeti"].items() if k != "onekler"}
         # Önek listesinin katkısı: boş önek listesiyle (yalnızca borç yönü filtresi) aynı kontrol
@@ -260,14 +292,16 @@ def main():
             _, sec2, _, _ = checks.run_full_audit(db, "Aylık", 15.0, accounts, 50.0, firm.vkn)
             sc2, _ = score(meta, sec2)
             log["tolerans50_tutar"] = sc2["Tutar Farkları"]
-        # Eşik duyarlılığı
-        log["esik"] = {}
-        for th in (10, 15, 25, 35):
-            prices = checks.price_anomalies(db.get_lines_df(), "Aylık", th)
-            risky = prices[prices["Risk_Durumu"] == "YÜKSEK RİSK"]
-            exp = {normalize_doc_no(x) for x in meta["truth"]["fiyat_sisirme"]}
-            got = {normalize_doc_no(x) for x in risky["Fatura_No"]}
-            log["esik"][th] = {"bulunan": len(exp & got), "beklenen": len(exp), "yanlis_alarm": len(got - exp)}
+        # Fiyat analizi: eşik duyarlılığı varsayılan kurallarla ve boş anahtar kelime listesiyle (yalnızca
+        # tevkifat + para birimi + yetersiz veri kuralları); en az alım sayısı duyarlılığı varsayılan kurallarla
+        lines = db.get_lines_df()
+        log["fiyat_ozeti"] = {k: v for k, v in counts["fiyat_ozeti"].items() if k != "kelimeler"}
+        log["esik"], log["esik_kelimesiz"], log["min_alim"] = {}, {}, {}
+        for th in ESIKLER:
+            log["esik"][th] = fiyat_puani(meta, lines, th, checks.FiyatKurallari())
+            log["esik_kelimesiz"][th] = fiyat_puani(meta, lines, th, checks.FiyatKurallari(kelimeler=[]))
+        for n in MIN_ALIMLAR:
+            log["min_alim"][n] = fiyat_puani(meta, lines, 15, checks.FiyatKurallari(min_alim=n))
         log["score"] = sc
         log["fp_causes"] = {k: dict(v) for k, v in fp.items()}
         all_results.append(log)

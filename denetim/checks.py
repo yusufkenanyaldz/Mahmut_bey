@@ -13,40 +13,240 @@ TOLERANCE_DEFAULT = 0.01
 
 
 # ---------------------------------------------------------------------- fiyat analizi
-def price_anomalies(lines, period_type="Aylık", threshold=15.0):
-    """Dönem + ürün + birim bazında ağırlıklı ortalama birim fiyattan (AOBF) sapmaları hesaplar.
+# Hizmet / hakediş kalemleri her ay farklı tutarda faturalanır; birim fiyat karşılaştırması anlamsızdır.
+# Ürün adında geçen kelimeler (firma başına değiştirilebilir)
+VARSAYILAN_FIYAT_HARIC_KELIMELER = "HAKEDİŞ, İŞÇİLİK, HİZMET, FASON, KİRALAMA, BAKIM, ONARIM, DANIŞMANLIK"
+# Grupta (dönem + ürün + birim + para birimi) bundan az alım varsa sapma riskli işaretlenmez (bilgi olarak kalır)
+FIYAT_MIN_ALIM = 3
+RISK_YUKSEK = "YÜKSEK RİSK"
+RISK_NORMAL = "Normal"
+RISK_YETERSIZ = "Yetersiz veri (bilgi)"
+FIYAT_NEDEN_IADE = "İade faturası"
+FIYAT_NEDEN_MIKTAR = "Miktar sıfır / boş"
+FIYAT_NEDEN_TEVKIFAT = "Tevkifatlı fatura"
+FIYAT_NEDEN_KELIME = "Anahtar kelime"
+FIYAT_NEDEN_YETERSIZ = "Yetersiz veri"
+FIYAT_COLS = ["Donem", "Tarih", "Fatura_No", "Tedarikci", "Tedarikci_VKN", "Urun_Adi", "Birim", "Para_Birimi",
+              "Miktar", "Birim_Fiyat", "Kur", "Birim_Fiyat_TL", "AOBF", "Fark_Yuzdesi", "Donemdeki_Alim_Sayisi",
+              "Risk_Durumu"]
+FIYAT_HARIC_COLS = ["Tarih", "Fatura_No", "Tedarikci", "Fatura_Tipi", "Urun_Adi", "Birim", "Para_Birimi", "Miktar",
+                    "Birim_Fiyat", "Birim_Fiyat_TL", "Analiz_Disi_Nedeni"]
 
-    İade faturaları ve miktarı 0 olan satırlar analize alınmaz. Tutarlar TL'ye çevrilir.
-    Dönüş: tüm satırları içeren DataFrame (Risk_Durumu sütunuyla).
+
+class FiyatKurallari:
+    """Fiyat analizinin hariç tutma kuralları (firma başına saklanır).
+
+    tevkifat_haric: tevkifatlı (InvoiceTypeCode TEVKIFAT) faturaların satırları analize alınmaz
+    kelime_haric: ürün adında hariç kelimelerden biri geçen satırlar analize alınmaz
+    kelimeler: parse_kelime_listesi() çıktısı; None → VARSAYILAN_FIYAT_HARIC_KELIMELER
+    min_alim: grupta bundan az alım varsa sapma riskli işaretlenmez (1 → kural kapalı)
     """
-    cols = ["Donem", "Tarih", "Fatura_No", "Tedarikci", "Tedarikci_VKN", "Urun_Adi", "Birim", "Miktar",
-            "Birim_Fiyat_TL", "AOBF_TL", "Fark_Yuzdesi", "Donemdeki_Alim_Sayisi", "Risk_Durumu"]
-    if lines.empty:
-        return pd.DataFrame(columns=cols)
-    df = lines[(lines["quantity"] > 0) & (lines["invoice_type"].fillna("") != "IADE")].copy()
-    if df.empty:
-        return pd.DataFrame(columns=cols)
-    df["rate"] = df["exchange_rate"].fillna(1.0)
-    df["net_tl"] = df["line_net"] * df["rate"]
-    df["Birim_Fiyat_TL"] = df["net_tl"] / df["quantity"]
-    df["Donem"] = df["issue_date"].map(lambda d: period_of(d, period_type))
-    df["uom_key"] = df["uom"].map(normalize_uom)
 
-    keys = ["Donem", "item_norm", "uom_key"]
-    grp = df.groupby(keys).agg(top_tutar=("net_tl", "sum"), top_miktar=("quantity", "sum"),
+    def __init__(self, tevkifat_haric=True, kelime_haric=True, kelimeler=None, min_alim=FIYAT_MIN_ALIM):
+        self.tevkifat_haric = bool(tevkifat_haric)
+        self.kelime_haric = bool(kelime_haric)
+        self.kelimeler = parse_kelime_listesi(VARSAYILAN_FIYAT_HARIC_KELIMELER) if kelimeler is None \
+            else list(kelimeler)
+        self.min_alim = max(1, int(min_alim))
+
+    def __repr__(self):
+        return (f"FiyatKurallari(tevkifat_haric={self.tevkifat_haric}, kelime_haric={self.kelime_haric}, "
+                f"kelimeler={self.kelimeler}, min_alim={self.min_alim})")
+
+
+def _kelime_anahtari(value):
+    """Kelime karşılaştırma anahtarı: büyük/küçük harf ve Türkçe karakter duyarsız, tek boşluklu."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    return re.sub(r"\s+", " ", tr_ascii_upper(str(value))).strip()
+
+
+def parse_kelime_listesi(text):
+    """'Hakediş, işçilik; HİZMET' → ['HAKEDIS', 'ISCILIK', 'HIZMET'] (karşılaştırma anahtarları, tekrarsız)."""
+    out = []
+    for parca in re.split(r"[,;\n]+", str(text or "")):
+        anahtar = _kelime_anahtari(parca)
+        if anahtar and anahtar not in out:
+            out.append(anahtar)
+    return out
+
+
+def haric_kelime(urun_adi, kelimeler):
+    """Ürün adında hariç kelimelerden biri geçiyorsa o kelimeyi, geçmiyorsa None döndürür.
+
+    kelimeler: parse_kelime_listesi() çıktısı ('Taşeron İşçilik Hakedişi' → 'ISCILIK').
+    """
+    ad = _kelime_anahtari(urun_adi)
+    if not ad:
+        return None
+    return next((k for k in kelimeler if k in ad), None)
+
+
+def _fatura_tipi(value):
+    return "" if value is None or (isinstance(value, float) and math.isnan(value)) else str(value).strip().upper()
+
+
+def iade_faturasi(invoice_type):
+    """IADE ve TEVKIFATIADE iade faturasıdır."""
+    return "IADE" in _fatura_tipi(invoice_type)
+
+
+def tevkifatli_fatura(invoice_type):
+    """TEVKIFAT (iade olmayan) tevkifatlı faturadır."""
+    tip = _fatura_tipi(invoice_type)
+    return tip.startswith("TEVKIFAT") and "IADE" not in tip
+
+
+def para_birimi(value):
+    """Belge para birimi kodu: boş / TL → TRY."""
+    pb = _fatura_tipi(value)
+    return "TRY" if pb in ("", "TL", "YTL") else pb
+
+
+def fiyat_analiz_disi_nedeni(invoice_type, quantity, urun_adi, kurallar):
+    """Satırın fiyat analizine neden alınmadığını döndürür (alınıyorsa None). Sıra: iade, miktar, tevkifat,
+    anahtar kelime."""
+    if iade_faturasi(invoice_type):
+        return FIYAT_NEDEN_IADE
+    if quantity is None or pd.isna(quantity) or float(quantity) <= 0:
+        return FIYAT_NEDEN_MIKTAR
+    if kurallar.tevkifat_haric and tevkifatli_fatura(invoice_type):
+        return FIYAT_NEDEN_TEVKIFAT
+    if kurallar.kelime_haric:
+        k = haric_kelime(urun_adi, kurallar.kelimeler)
+        if k:
+            return f"{FIYAT_NEDEN_KELIME} ({k})"
+    return None
+
+
+class FiyatAnalizSonucu:
+    """fiyat_analizi() sonucu: satirlar (analiz edilen tüm satırlar, Risk_Durumu sütunuyla), haric (analiz dışı
+    satırlar ve eşik üstü olduğu hâlde yetersiz veri nedeniyle riskli işaretlenmeyenler) ve ozet (dict)."""
+
+    def __init__(self, satirlar, haric, ozet):
+        self.satirlar, self.haric, self.ozet = satirlar, haric, ozet
+
+    @property
+    def riskli(self):
+        return self.satirlar[self.satirlar["Risk_Durumu"] == RISK_YUKSEK].reset_index(drop=True)
+
+
+def fiyat_analizi(lines, period_type="Aylık", threshold=15.0, kurallar=None):
+    """Dönem + ürün + birim + para birimi bazında ağırlıklı ortalama birim fiyattan (AOBF) sapmaları hesaplar.
+
+    Birim fiyat ve AOBF belge para birimindedir; sapma belge para birimindeki fiyat üzerinden hesaplanır
+    (kur dalgalanması sapma yaratmaz, EUR motorin TL motorinle karşılaştırılmaz). Birim_Fiyat_TL bilgi içindir.
+    Analize alınmayanlar (bkz. fiyat_analiz_disi_nedeni): iade faturaları, miktarı 0 olan satırlar ve
+    kurallar açıksa tevkifatlı faturalar ile ürün adında hariç kelime geçen satırlar.
+    Grupta kurallar.min_alim'den az alım varsa eşik aşılsa da Risk_Durumu RISK_YETERSIZ olur (riskli sayılmaz).
+    Dönüş: FiyatAnalizSonucu
+    """
+    kurallar = kurallar or FiyatKurallari()
+    ozet = {"toplam": len(lines), "incelenen": 0, "riskli": 0, "iade": 0, "miktar": 0, "tevkifat": 0,
+            "kelime": 0, "yetersiz_veri": 0, "esik": threshold, "min_alim": kurallar.min_alim,
+            "tevkifat_haric": kurallar.tevkifat_haric, "kelime_haric": kurallar.kelime_haric,
+            "kelimeler": list(kurallar.kelimeler)}
+    if lines.empty:
+        return FiyatAnalizSonucu(pd.DataFrame(columns=FIYAT_COLS), pd.DataFrame(columns=FIYAT_HARIC_COLS), ozet)
+    df = lines.copy()
+    df["Para_Birimi"] = df["currency"].map(para_birimi) if "currency" in df else "TRY"
+    df["Kur"] = df["exchange_rate"].fillna(1.0).astype(float)
+    df["uom_key"] = df["uom"].map(normalize_uom)
+    miktar = pd.to_numeric(df["quantity"], errors="coerce")
+    df["Birim_Fiyat"] = df["line_net"].astype(float) / miktar.where(miktar > 0)
+    df["Birim_Fiyat_TL"] = df["Birim_Fiyat"] * df["Kur"]
+    df["neden"] = [fiyat_analiz_disi_nedeni(t, q, a, kurallar)
+                   for t, q, a in zip(df["invoice_type"], df["quantity"], df["item_name"])]
+
+    def haric_tablosu(d, neden):
+        return d.assign(Analiz_Disi_Nedeni=neden).rename(columns={
+            "issue_date": "Tarih", "invoice_no": "Fatura_No", "supplier_name": "Tedarikci", "invoice_type": "Fatura_Tipi",
+            "item_name": "Urun_Adi", "uom_key": "Birim", "quantity": "Miktar"})[FIYAT_HARIC_COLS]
+
+    disarida = df[df["neden"].notna()]
+    haric = haric_tablosu(disarida, disarida["neden"])
+    nedenler = disarida["neden"].astype(str)
+    ozet.update(iade=int((nedenler == FIYAT_NEDEN_IADE).sum()), miktar=int((nedenler == FIYAT_NEDEN_MIKTAR).sum()),
+                tevkifat=int((nedenler == FIYAT_NEDEN_TEVKIFAT).sum()),
+                kelime=int(nedenler.str.startswith(FIYAT_NEDEN_KELIME).sum()))
+
+    df = df[df["neden"].isna()].copy()
+    if df.empty:
+        return FiyatAnalizSonucu(pd.DataFrame(columns=FIYAT_COLS), haric.reset_index(drop=True), ozet)
+    df["Donem"] = df["issue_date"].map(lambda d: period_of(d, period_type))
+    keys = ["Donem", "item_norm", "uom_key", "Para_Birimi"]
+    grp = df.groupby(keys).agg(top_tutar=("line_net", "sum"), top_miktar=("quantity", "sum"),
                                Donemdeki_Alim_Sayisi=("id", "count")).reset_index()
-    grp["AOBF_TL"] = grp["top_tutar"] / grp["top_miktar"]
-    df = df.merge(grp[keys + ["AOBF_TL", "Donemdeki_Alim_Sayisi"]], on=keys)
-    df["Fark_Yuzdesi"] = (df["Birim_Fiyat_TL"] - df["AOBF_TL"]) / df["AOBF_TL"] * 100
-    df.loc[df["AOBF_TL"] == 0, "Fark_Yuzdesi"] = 0.0
-    df["Risk_Durumu"] = df["Fark_Yuzdesi"].abs().gt(threshold).map({True: "YÜKSEK RİSK", False: "Normal"})
+    grp["AOBF"] = grp["top_tutar"] / grp["top_miktar"]
+    df = df.merge(grp[keys + ["AOBF", "Donemdeki_Alim_Sayisi"]], on=keys)
+    df["Fark_Yuzdesi"] = (df["Birim_Fiyat"] - df["AOBF"]) / df["AOBF"] * 100
+    df.loc[df["AOBF"] == 0, "Fark_Yuzdesi"] = 0.0
+    esik_ustu = df["Fark_Yuzdesi"].abs().gt(threshold)
+    yetersiz = df["Donemdeki_Alim_Sayisi"] < kurallar.min_alim
+    df["Risk_Durumu"] = RISK_NORMAL
+    df.loc[esik_ustu & ~yetersiz, "Risk_Durumu"] = RISK_YUKSEK
+    df.loc[esik_ustu & yetersiz, "Risk_Durumu"] = RISK_YETERSIZ
+
+    bilgi = df[df["Risk_Durumu"] == RISK_YETERSIZ]
+    if not bilgi.empty:
+        neden = [f"{FIYAT_NEDEN_YETERSIZ} (dönemde {n} alım < {kurallar.min_alim}; sapma %{f:.1f})"
+                 for n, f in zip(bilgi["Donemdeki_Alim_Sayisi"], bilgi["Fark_Yuzdesi"])]
+        haric = pd.concat([haric, haric_tablosu(bilgi, neden)], ignore_index=True)
 
     out = df.rename(columns={"issue_date": "Tarih", "invoice_no": "Fatura_No", "supplier_name": "Tedarikci",
                              "supplier_vkn": "Tedarikci_VKN", "item_name": "Urun_Adi", "uom_key": "Birim",
-                             "quantity": "Miktar"})[cols]
-    for c in ("Birim_Fiyat_TL", "AOBF_TL", "Fark_Yuzdesi"):
-        out[c] = out[c].round(2)
-    return out.sort_values(["Donem", "Urun_Adi", "Tarih"]).reset_index(drop=True)
+                             "quantity": "Miktar"})[FIYAT_COLS]
+    for c in ("Birim_Fiyat", "Birim_Fiyat_TL", "AOBF", "Fark_Yuzdesi"):
+        out[c] = out[c].round(4 if c == "Birim_Fiyat" else 2)
+    for c in ("Birim_Fiyat", "Birim_Fiyat_TL"):
+        haric[c] = haric[c].astype(float).round(4 if c == "Birim_Fiyat" else 2)
+    ozet.update(incelenen=len(out), riskli=int((out["Risk_Durumu"] == RISK_YUKSEK).sum()),
+                yetersiz_veri=int((out["Risk_Durumu"] == RISK_YETERSIZ).sum()))
+    out = out.sort_values(["Donem", "Urun_Adi", "Para_Birimi", "Tarih"]).reset_index(drop=True)
+    haric = haric.sort_values(["Analiz_Disi_Nedeni", "Tarih", "Fatura_No"], kind="mergesort").reset_index(drop=True)
+    return FiyatAnalizSonucu(out, haric, ozet)
+
+
+def price_anomalies(lines, period_type="Aylık", threshold=15.0, kurallar=None):
+    """fiyat_analizi() ile aynı; yalnızca analiz edilen satırları (Risk_Durumu sütunuyla) döndürür."""
+    return fiyat_analizi(lines, period_type, threshold, kurallar).satirlar
+
+
+def fiyat_ozeti_metni(ozet):
+    """Fiyat analizinin özetini (kaç satır neden analiz dışı kaldı) tek satırlık metne çevirir."""
+    if not ozet:
+        return ""
+    fmt = lambda n: f"{n:,}".replace(",", ".")  # noqa: E731
+    disarida = [f"iade {fmt(ozet['iade'])}"]
+    if ozet["miktar"]:
+        disarida.append(f"miktar sıfır {fmt(ozet['miktar'])}")
+    disarida.append(f"tevkifat {fmt(ozet['tevkifat'])}" if ozet["tevkifat_haric"] else "tevkifat (kural kapalı)")
+    disarida.append(f"anahtar kelime {fmt(ozet['kelime'])}" if ozet["kelime_haric"] and ozet["kelimeler"]
+                    else "anahtar kelime (kural kapalı)")
+    return (f"Fiyat analizi: {fmt(ozet['incelenen'])} satır incelendi, {fmt(ozet['riskli'])} riskli | "
+            f"Analiz dışı: {', '.join(disarida)} | Yetersiz veri (dönemde < {ozet['min_alim']} alım, riskli "
+            f"sayılmadı): {fmt(ozet['yetersiz_veri'])}")
+
+
+def fiyat_ozeti_df(ozet):
+    """Fiyat analizinin özetini Excel raporu için tabloya çevirir."""
+    cols = ["Kalem", "Satir_Sayisi", "Aciklama"]
+    if not ozet:
+        return pd.DataFrame(columns=cols)
+    rows = [
+        ("İncelenen", ozet["incelenen"], "Dönem + ürün + birim + para birimi bazında AOBF ile karşılaştırılan satırlar"),
+        ("Riskli", ozet["riskli"], f"AOBF'den sapması ±%{ozet['esik']:g} eşiğini aşan satırlar"),
+        ("Analiz dışı: iade", ozet["iade"], "İade faturası satırları"),
+        ("Analiz dışı: miktar sıfır", ozet["miktar"], "Miktarı 0 ya da boş olan satırlar"),
+        ("Analiz dışı: tevkifat", ozet["tevkifat"] if ozet["tevkifat_haric"] else None,
+         "Tevkifatlı faturaların satırları (hizmet / hakediş)" if ozet["tevkifat_haric"] else "Kural kapalı"),
+        ("Analiz dışı: anahtar kelime", ozet["kelime"] if ozet["kelime_haric"] else None,
+         "Ürün adında geçen kelimeler: " + (", ".join(ozet["kelimeler"]) or "(yok)") if ozet["kelime_haric"]
+         else "Kural kapalı"),
+        ("Yetersiz veri (bilgi)", ozet["yetersiz_veri"],
+         f"Eşik üstü sapma, ama grupta dönem içinde {ozet['min_alim']} alımdan az var; riskli sayılmadı"),
+    ]
+    return pd.DataFrame(rows, columns=cols)
 
 
 # ---------------------------------------------------------------------- belge no eşleştirme
@@ -588,13 +788,15 @@ def customer_mismatch(invoices, company_vkn):
 
 
 # ---------------------------------------------------------------------- genel rapor
-def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn, haric_onekler=None):
+def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn, haric_onekler=None,
+                   fiyat_kurallari=None):
     """Tüm kontrolleri çalıştırır.
 
     haric_onekler: faturasız kayıt kontrolünde hariç tutulan belge no önekleri (None → varsayılan)
+    fiyat_kurallari: FiyatKurallari (None → varsayılan kurallar)
     Dönüş: (özet DataFrame, OrderedDict(başlık → DataFrame), notlar, sayılar)
-    sayılar: {"fatura", "yevmiye", "eslesme", "faturasiz_ozeti", "faturasiz_haric"}; mutabakat yapılmadıysa
-    eslesme / faturasiz_ozeti / faturasiz_haric None.
+    sayılar: {"fatura", "yevmiye", "eslesme", "faturasiz_ozeti", "faturasiz_haric", "fiyat_ozeti", "fiyat_haric"};
+    mutabakat yapılmadıysa eslesme / faturasiz_ozeti / faturasiz_haric None.
     """
     invoices = db.get_invoices_df()
     lines = db.get_lines_df()
@@ -603,9 +805,8 @@ def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn,
     notes = []
     eslesme = faturasiz_ozeti = faturasiz_haric = None
 
-    prices = price_anomalies(lines, period_type, threshold)
-    sections[f"Fiyat Anomalileri (±%{threshold:g})"] = prices[prices["Risk_Durumu"] == "YÜKSEK RİSK"] \
-        .reset_index(drop=True)
+    fiyat = fiyat_analizi(lines, period_type, threshold, fiyat_kurallari)
+    sections[f"Fiyat Anomalileri (±%{threshold:g})"] = fiyat.riskli
 
     if accounts and not journal.empty:
         recon = reconcile(invoices, journal, accounts, tolerance, period_type, haric_onekler)
@@ -630,4 +831,5 @@ def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn,
     summary = pd.DataFrame(
         [{"Kontrol": name, "Bulgu_Sayisi": len(df)} for name, df in sections.items()])
     return summary, sections, notes, {"fatura": len(invoices), "yevmiye": len(journal), "eslesme": eslesme,
-                                      "faturasiz_ozeti": faturasiz_ozeti, "faturasiz_haric": faturasiz_haric}
+                                      "faturasiz_ozeti": faturasiz_ozeti, "faturasiz_haric": faturasiz_haric,
+                                      "fiyat_ozeti": fiyat.ozet, "fiyat_haric": fiyat.haric}

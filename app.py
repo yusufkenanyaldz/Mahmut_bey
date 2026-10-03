@@ -159,6 +159,7 @@ class AuditApp(ctk.CTk):
         self.recon_sections = None
         self.audit_sections = None
         self.recon_haric = self.audit_haric = None
+        self.analysis_result = self.audit_fiyat_haric = None
 
         self.title(APP_TITLE)
         self.geometry("1280x800")
@@ -217,12 +218,14 @@ class AuditApp(ctk.CTk):
         self.firm, self.db = self.registry.get(code), db
         self.registry.set_last_firm(self.firm.code)
         self.analysis_df = self.recon_sections = self.audit_sections = self.recon_haric = self.audit_haric = None
+        self.analysis_result = self.audit_fiyat_haric = None
         self.refresh_firm_display()
         self.show_welcome_screen()
 
     def close_firm(self):
         self.firm = self.db = None
         self.analysis_df = self.recon_sections = self.audit_sections = self.recon_haric = self.audit_haric = None
+        self.analysis_result = self.audit_fiyat_haric = None
         self.refresh_firm_display()
 
     def refresh_firm_display(self):
@@ -305,6 +308,60 @@ class AuditApp(ctk.CTk):
         if not sections or haric is None or var is None or not var.get():
             return sections
         return OrderedDict(list(sections.items()) + [("Faturasız Listeden Hariç Tutulanlar", haric)])
+
+    def add_fiyat_kural_rows(self):
+        """Fiyat analizi hariç tutma kuralları: tevkifat ve anahtar kelime kuralları (ayrı ayrı açılıp kapatılır),
+        kelime listesi (Varsayılan butonuyla), en az alım sayısı ve analiz dışı satırların Excel seçeneği."""
+        row = self.create_button_row()
+        tevkifat = ctk.BooleanVar(value=self.setting("fiyat_tevkifat_haric", "1") == "1")
+        ctk.CTkCheckBox(row, text="Tevkifatlı faturaları hariç tut", variable=tevkifat, font=self.font_label) \
+            .pack(side="left", padx=(0, 18))
+        kelime = ctk.BooleanVar(value=self.setting("fiyat_kelime_haric", "1") == "1")
+        ctk.CTkCheckBox(row, text="Anahtar kelimeyle hariç tut", variable=kelime, font=self.font_label) \
+            .pack(side="left", padx=(0, 18))
+        min_alim = self.add_labeled_entry(row, "En Az Alım (dönemde):",
+                                          self.setting("fiyat_min_alim", str(checks.FIYAT_MIN_ALIM)), 50)
+        excel = ctk.BooleanVar(value=self.setting("fiyat_haric_excel", "1") == "1")
+        ctk.CTkCheckBox(row, text="Analiz dışı satırları Excel'e ekle", variable=excel, font=self.font_label,
+                        command=lambda: self.db.set_setting("fiyat_haric_excel", "1" if excel.get() else "0")) \
+            .pack(side="left")
+        row2 = self.create_button_row()
+        kelimeler = self.add_labeled_entry(
+            row2, "Fiyat Analizinde Hariç Ürün/Hizmet Kelimeleri:",
+            self.setting("fiyat_haric_kelimeler", checks.VARSAYILAN_FIYAT_HARIC_KELIMELER), 460,
+            "boş: kelime filtresi yok")
+
+        def reset():
+            kelimeler.delete(0, "end")
+            kelimeler.insert(0, checks.VARSAYILAN_FIYAT_HARIC_KELIMELER)
+
+        ctk.CTkButton(row2, text="Varsayılan", width=90, height=28, command=reset).pack(side="left")
+        return {"tevkifat": tevkifat, "kelime": kelime, "min_alim": min_alim, "kelimeler": kelimeler, "excel": excel}
+
+    def read_fiyat_kurallari(self, w):
+        """Fiyat analizi kurallarını doğrular, firma ayarlarına kaydeder ve checks.FiyatKurallari döndürür."""
+        try:
+            min_alim = parse_number(w["min_alim"].get())
+        except ValueError:
+            min_alim = None
+        if min_alim is None or min_alim < 1 or min_alim != int(min_alim) or min_alim > 1000:
+            messagebox.showwarning("Uyarı", "En az alım sayısı 1 veya daha büyük bir tam sayı olmalıdır (ör. "
+                                            f"{checks.FIYAT_MIN_ALIM}; 1 → yetersiz veri kuralı kapalı).")
+            return None
+        text = w["kelimeler"].get().strip()
+        self.db.set_setting("fiyat_tevkifat_haric", "1" if w["tevkifat"].get() else "0")
+        self.db.set_setting("fiyat_kelime_haric", "1" if w["kelime"].get() else "0")
+        self.db.set_setting("fiyat_haric_kelimeler", text)
+        self.db.set_setting("fiyat_min_alim", str(int(min_alim)))
+        return checks.FiyatKurallari(w["tevkifat"].get(), w["kelime"].get(), checks.parse_kelime_listesi(text),
+                                     int(min_alim))
+
+    @staticmethod
+    def with_fiyat_haric_sheet(sections, haric, w):
+        """Excel çıktısına, seçiliyse fiyat analizi dışında kalan satırların bilgi sayfasını ekler."""
+        if not sections or haric is None or w is None or not w["excel"].get():
+            return sections
+        return OrderedDict(list(sections.items()) + [("Fiyat Analizi Dışı Satırlar", haric)])
 
     # ------------------------------------------------------------------ iskelet
     def create_sidebar(self):
@@ -827,11 +884,15 @@ class AuditApp(ctk.CTk):
     def show_analysis_frame(self):
         self.clear_main_frame()
         self.create_header("Fatura Bazlı Risk ve Anomali Analizi",
-                           "Her dönem içinde aynı ürün + birim için ağırlıklı ortalama birim fiyat (AOBF, TL, KDV "
-                           "hariç) hesaplanır; eşiği aşan sapmalar listelenir. İade faturaları hariç tutulur.")
+                           "Her dönem içinde aynı ürün + birim + para birimi için ağırlıklı ortalama birim fiyat "
+                           "(AOBF, belge para biriminde, KDV hariç) hesaplanır; eşiği aşan sapmalar listelenir. İade "
+                           "faturaları, (seçiliyse) tevkifatlı faturalar ve adında hariç kelime geçen hizmet / hakediş "
+                           "kalemleri analize alınmaz. Dönemde en az alım sayısından az alımı olan üründe sapma "
+                           "riskli sayılmaz, bilgi olarak gösterilir.")
         opts = self.create_button_row()
         self.period_var = self.add_period_menu(opts)
         self.threshold_entry = self.add_labeled_entry(opts, "Sapma Eşiği (%):", self.setting("threshold", "15"), 80)
+        self.analysis_rules = self.add_fiyat_kural_rows()
         row = self.create_button_row()
         self.add_button(row, "▶ Analizi Çalıştır", self.run_analysis)
         self.add_button(row, "📥 Excel'e Aktar", self.export_to_excel,
@@ -841,33 +902,41 @@ class AuditApp(ctk.CTk):
 
     def run_analysis(self):
         threshold = self.read_threshold(self.threshold_entry)
-        if threshold is None:
+        kurallar = self.read_fiyat_kurallari(self.analysis_rules)
+        if threshold is None or kurallar is None:
             return
         box = self.result_box
         box.delete("1.0", "end")
         self.log(box, "> Analiz motoru başlatıldı...")
         self.update()
-        df = checks.price_anomalies(self.db.get_lines_df(), self.period_var.get(), threshold)
-        if df.empty:
-            self.analysis_df = None
+        res = checks.fiyat_analizi(self.db.get_lines_df(), self.period_var.get(), threshold, kurallar)
+        self.analysis_result = res
+        self.analysis_df = res.satirlar
+        if res.ozet["toplam"] == 0:
+            self.analysis_df = self.analysis_result = None
             return self.log(box, "[BİLGİ] Analiz edilecek fatura satırı bulunamadı.", "uyari")
-        self.analysis_df = df
-        risky = df[df["Risk_Durumu"] == "YÜKSEK RİSK"]
+        self.log(box, f"> {checks.fiyat_ozeti_metni(res.ozet)}\n")
+        cols = ["Donem", "Fatura_No", "Tedarikci", "Urun_Adi", "Birim", "Para_Birimi", "Miktar", "Birim_Fiyat",
+                "Birim_Fiyat_TL", "AOBF", "Fark_Yuzdesi"]
         self.log_section(box, f"RİSKLİ FATURA SATIRLARI ({self.period_var.get()} dönem, ±%{threshold:g} sapma)",
-                         risky[["Donem", "Fatura_No", "Tedarikci", "Urun_Adi", "Birim", "Miktar", "Birim_Fiyat_TL",
-                                "AOBF_TL", "Fark_Yuzdesi"]])
-        self.log(box, f"Toplam {len(df)} satır incelendi, {len(risky)} satır riskli.")
+                         res.riskli[cols])
+        bilgi = res.satirlar[res.satirlar["Risk_Durumu"] == checks.RISK_YETERSIZ]
+        if not bilgi.empty:
+            self.log_section(box, "BİLGİ: EŞİK ÜSTÜ AMA YETERSİZ VERİ (RİSKLİ SAYILMADI)",
+                             bilgi[cols + ["Donemdeki_Alim_Sayisi"]])
+        self.log(box, f"Toplam {len(res.satirlar)} satır incelendi, {len(res.riskli)} satır riskli.")
 
     def export_to_excel(self):
-        if self.analysis_df is None or self.analysis_df.empty:
+        if self.analysis_result is None:
             messagebox.showwarning("Uyarı", "Lütfen önce analizi çalıştırın.")
             return
         file_path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile="Risk_Raporu.xlsx",
                                                  title="Excel Olarak Kaydet", filetypes=[("Excel Dosyası", "*.xlsx")])
         if file_path:
-            df = self.analysis_df
-            self._export(file_path, OrderedDict([("Riskli Satırlar", df[df["Risk_Durumu"] == "YÜKSEK RİSK"]),
-                                                 ("Tüm Satırlar", df)]))
+            res = self.analysis_result
+            self._export(file_path, self.with_fiyat_haric_sheet(
+                OrderedDict([("Fiyat Analizi Özeti", checks.fiyat_ozeti_df(res.ozet)), ("Riskli Satırlar", res.riskli),
+                             ("Tüm Satırlar", res.satirlar)]), res.haric, self.analysis_rules))
 
     def _export(self, file_path, sections):
         try:
@@ -956,12 +1025,15 @@ class AuditApp(ctk.CTk):
         self.audit_accounts = self.add_labeled_entry(opts, "Hesap Kodları:", self.setting("accounts", ""), 180,
                                                      "ör. 153, 770")
         self.audit_tolerance = self.add_labeled_entry(opts, "Tolerans (TL):", self.setting("tolerance", "0.01"), 70)
+        self.audit_rules = self.add_fiyat_kural_rows()
         self.audit_onek_entry, self.audit_haric_var = self.add_haric_onek_row()
         row = self.create_button_row()
         self.add_button(row, "▶ Tüm Kontrolleri Çalıştır", self.run_full_audit,
                         fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
         self.add_button(row, "📥 Raporu Excel'e Aktar", lambda: self.export_sections_dialog(
-            self.with_haric_sheet(self.audit_sections, self.audit_haric, self.audit_haric_var),
+            self.with_fiyat_haric_sheet(
+                self.with_haric_sheet(self.audit_sections, self.audit_haric, self.audit_haric_var),
+                self.audit_fiyat_haric, self.audit_rules),
             "Denetim_Raporu.xlsx"))
         self.audit_box = self.create_console_box()
         self.log(self.audit_box, "> Rapor bekleniyor...")
@@ -969,7 +1041,9 @@ class AuditApp(ctk.CTk):
     def run_full_audit(self):
         threshold = self.read_threshold(self.audit_threshold)
         tolerance = self.read_tolerance(self.audit_tolerance)
-        if threshold is None or tolerance is None:
+        kurallar = self.read_fiyat_kurallari(self.audit_rules) if threshold is not None and tolerance is not None \
+            else None
+        if kurallar is None:
             return
         accounts = parse_account_list(self.audit_accounts.get())
         self.db.set_setting("accounts", self.audit_accounts.get().strip())
@@ -979,18 +1053,20 @@ class AuditApp(ctk.CTk):
         self.log(box, "> Tüm kontroller çalıştırılıyor...")
         self.update()
         summary, sections, notes, counts = checks.run_full_audit(
-            self.db, self.audit_period_var.get(), threshold, accounts, tolerance, self.firm.vkn, onekler)
+            self.db, self.audit_period_var.get(), threshold, accounts, tolerance, self.firm.vkn, onekler, kurallar)
         self.audit_haric = counts["faturasiz_haric"]
+        self.audit_fiyat_haric = counts["fiyat_haric"]
         if counts["fatura"] == 0:
             self.audit_sections = None
             self.log(box, "[BİLGİ] Veritabanında fatura bulunamadı.", "uyari")
             return
-        head = [("Özet", summary)]
+        head = [("Özet", summary), ("Fiyat Analizi Özeti", checks.fiyat_ozeti_df(counts["fiyat_ozeti"]))]
         if counts["eslesme"]:
             head.append(("Eşleşme Özeti", checks.eslesme_ozeti_df(counts["eslesme"])))
             head.append(("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(counts["faturasiz_ozeti"])))
         self.audit_sections = OrderedDict(head + list(sections.items()))
         self.log(box, f"> {counts['fatura']} fatura, {counts['yevmiye']} yevmiye satırı incelendi.")
+        self.log(box, f"> {checks.fiyat_ozeti_metni(counts['fiyat_ozeti'])}")
         if counts["eslesme"]:
             self.log(box, f"> {checks.eslesme_ozeti_metni(counts['eslesme'])}")
             self.log(box, f"> {checks.faturasiz_ozeti_metni(counts['faturasiz_ozeti'])}")
@@ -1013,7 +1089,8 @@ class AuditApp(ctk.CTk):
         self.create_header("Firma ve Veri Ayarları",
                            "Firma VKN'si girilirse, alıcısı bu firma olmayan XML faturalar raporlanır. "
                            "Analiz ayarları (eşik, hesap kodları, tolerans, dönem, faturasız kontrolde hariç tutulan "
-                           "belge no önekleri) bu firmaya özel saklanır.")
+                           "belge no önekleri, fiyat analizinin hariç tutma kuralları ve kelimeleri) bu firmaya özel "
+                           "saklanır.")
         info = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         info.pack(fill="x", padx=40, pady=(10, 8))
         f = self.firm
@@ -1050,6 +1127,7 @@ class AuditApp(ctk.CTk):
             return
         self.db.clear_data()
         self.analysis_df = self.recon_sections = self.audit_sections = self.recon_haric = self.audit_haric = None
+        self.analysis_result = self.audit_fiyat_haric = None
         messagebox.showinfo("Tamam", "Veriler silindi.")
         self.show_settings_frame()
 

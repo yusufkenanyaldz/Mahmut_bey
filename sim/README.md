@@ -29,18 +29,18 @@ yöntemlerinin dağılımını yazdırır. Yalnızca bilgi amaçlı bölümler (
 "Belirsiz Eşleşme (Birden Fazla Seri+Sıra Adayı)") bilinen bir hatayı temsil etmediği için puanlamaya
 katılmaz, yanlış alarm sayılmaz; `sonuclar.json` içinde firma başına `bilgi` alanında ayrıca raporlanır.
 
-| Kontrol | v2.0 yakalanan | v2.0 yanlış alarm | Madde 2 sonrası yakalanan | Madde 2 sonrası yanlış alarm | Madde 3 sonrası yakalanan | Madde 3 sonrası yanlış alarm | Madde 4 sonrası yakalanan | Madde 4 sonrası yanlış alarm |
-|---|---|---|---|---|---|---|---|---|
-| Muhasebeleşmemiş fatura | 46/46 | 998 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 |
-| Yanlış hesaba kayıt | 51/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 |
-| Tutar farkı | 70/77 | 206 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 |
-| Dönem kayması | 34/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 |
-| Faturasız gider kaydı | 52/52 | 1.404 | 52/52 | 412 | 52/52 | 412 | 52/52 | 0 |
-| Mükerrer fatura | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 |
-| Fiyat şişirme | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 |
-| Başka firmaya kesilmiş fatura | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 |
-| XML hesaplama hatası | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 |
-| **Toplam** | **363/385** | **3.683** | **385/385** | **1.759** | **385/385** | **1.759** | **385/385** | **1.347** |
+| Kontrol | v2.0 yakalanan | v2.0 yanlış alarm | Madde 2 sonrası yakalanan | Madde 2 sonrası yanlış alarm | Madde 3 sonrası yakalanan | Madde 3 sonrası yanlış alarm | Madde 4 sonrası yakalanan | Madde 4 sonrası yanlış alarm | Madde 5 sonrası yakalanan | Madde 5 sonrası yanlış alarm |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Muhasebeleşmemiş fatura | 46/46 | 998 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 |
+| Yanlış hesaba kayıt | 51/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 |
+| Tutar farkı | 70/77 | 206 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 |
+| Dönem kayması | 34/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 |
+| Faturasız gider kaydı | 52/52 | 1.404 | 52/52 | 412 | 52/52 | 412 | 52/52 | 0 | 52/52 | 0 |
+| Mükerrer fatura | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 |
+| Fiyat şişirme | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | **7** |
+| Başka firmaya kesilmiş fatura | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 |
+| XML hesaplama hatası | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 |
+| **Toplam** | **363/385** | **3.683** | **385/385** | **1.759** | **385/385** | **1.759** | **385/385** | **1.347** | **385/385** | **538** |
 
 Firma seçici (madde 1) sonuçları değiştirmedi; v2.0 sütunu madde 1 sonrası için de geçerlidir.
 
@@ -97,3 +97,48 @@ yalnızca "Faturası Bulunmayan Yevmiye Kayıtları":
   kayıtlarını borç yönü süzgeci eler). `metin.py` boş önek listesiyle ölçümü de her çalıştırmada yazdırır
   ("Faturasız kayıt, boş önek listesiyle …") ve raporlara **Faturasız Kayıt Özeti** ile
   **Faturasız Listeden Hariç Tutulanlar** sayfalarını ekler.
+
+**Madde 5 (fiyat anomalisi analizi)** — diğer kontroller birebir aynı kaldı; değişen yalnızca "Fiyat Anomalileri"
+(yanlış alarm, riskli satır içeren gerçek hatası olmayan fatura sayısıdır):
+
+| Fiyat analizi (%15 eşik) | Yakalanan | Yanlış alarm |
+|---|---|---|
+| Madde 4 sonrası (dönem + ürün + birim, TL) | 41/41 | 816 (taşeron hakedişi 309, motorin 269, fason dokuma 231, diğer 7) |
+| Yalnızca para birimine göre ayrı grup | 41/41 | 547 (EUR motorinin 269'u gitti) |
+| + tevkifatlı faturalar hariç | 41/41 | 125 |
+| + yetersiz veri (en az 3 alım) — **boş kelime listesi** | 41/41 | 125 |
+| + varsayılan kelime listesi (**varsayılan kurallar**) | 41/41 | **7** |
+
+Eşik duyarlılığı (`metin.py` her çalıştırmada yazdırır):
+
+| Eşik | Madde 4 sonrası | Madde 5, varsayılan kelimeler | Madde 5, boş kelime listesi |
+|---|---|---|---|
+| %10 | 41/41, 1.041 yanlış alarm | 41/41, 133 | 41/41, 268 |
+| %15 | 41/41, 816 | 41/41, **7** | 41/41, 125 |
+| %25 | 39/41, 631 | 39/41, 0 | 39/41, 94 |
+| %35 | 34/41, 405 | 35/41, 0 | 35/41, 56 |
+
+- Boş kelime listesiyle kalan 125 yanlış alarmın 117'si Excel'den yüklenen firmalardaki fason dokuma (101) ve
+  taşeron hakedişi (16) faturalarıdır: Excel şablonunda fatura tipi olmadığından tevkifat kuralı bu faturaları
+  tanıyamaz, kelime listesi tanır. Kalan 7 (varsayılan kurallarda da kalan) yanlış alarm lateks, lastik, hazır
+  beton ve boya kimyasalında %16–20'lik gerçek fiyat dalgalanmasıdır (ürünün kendisi, hizmet değil).
+- Varsayılan kelimeler simülasyona göre değil, yaygın hizmet / hakediş adlandırmasına göre seçildi; simülasyonda
+  `HAKEDİŞ` (taşeron), `HİZMET` (fason dokuma, nakliye), `KİRALAMA` (iş makinesi) ve `BAKIM` (tır bakım onarım)
+  eşleşiyor. `Kiralık Filo Aracı` (araç alımı) `KİRALAMA` ile eşleşmez ve analizde kalır.
+- **En az alım sayısı (yetersiz veri):** simülasyonda gerçek bir fiyat şişirmesinin bulunduğu en küçük grup 4 alımlı;
+  en az alım 1–5 arasında yakalama ve yanlış alarm değişmiyor (41/41, 7; eşik üstü yetersiz veri satırı 0). Tek
+  alımlı grupta sapma her zaman 0 olduğundan "en az 2" etkisizdir; varsayılan **3** seçildi. Seyrek veri stres
+  testinde (gerçek hatalar dışındaki satırların bir kısmı rastgele atılarak, kalıcı değildir, elle yapıldı) 3'ün
+  bedeli görülüyor:
+
+  | Tutulan satır | en az 1–2 | en az 3 | en az 4 | en az 5 |
+  |---|---|---|---|---|
+  | %50 | 39/41, 14 | 39/41, 13 | 37/41, 12 | 36/41, 12 |
+  | %20 | 34/41, 18 | 33/41, 17 | 28/41, 15 | 25/41, 13 |
+  | %10 | 31/41, 22 | 25/41, 16 | 20/41, 8 | 9/41, 4 |
+
+  İki alımlı gruplarda yakalama ve yanlış alarm aynı oranda düşüyor (iki fiyat ortalamadan simetrik sapar);
+  riskli sayılmayan satırlar kaybolmaz, "Yetersiz veri (bilgi)" olarak raporda ve **Fiyat Analizi Dışı Satırlar**
+  sayfasında görünür. Çok seyrek alım yapan firmalarda en az alım 2'ye (ya da kuralı kapatmak için 1'e) indirilebilir.
+- Raporlara **Fiyat Analizi Özeti** ve **Fiyat Analizi Dışı Satırlar** sayfaları eklendi (40 firmada analiz dışı:
+  iade 40, tevkifat 1.068, anahtar kelime 1.419 satır; incelenen 14.923 satır).

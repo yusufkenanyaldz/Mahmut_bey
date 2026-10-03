@@ -31,7 +31,7 @@ tutulur; firma değiştirmek için veri silmek ya da dosya kopyalamak gerekmez.
   10 ya da 11 hane), **sektör** (isteğe bağlı) ve oluşturulma tarihi. Alıcı VKN kontrolü aktif firmanın
   VKN'sini kullanır. Kod sonradan değiştirilebilir; firmanın veritabanı dosyası değişmez.
 - Analiz ayarları (sapma eşiği, hesap kodları, tolerans, dönem tipi, faturasız kontrolde hariç tutulan belge no
-  önekleri) firma başına saklanır.
+  önekleri, fiyat analizinin hariç tutma kuralları, kelime listesi ve en az alım sayısı) firma başına saklanır.
 - Firma seçilmeden veri yükleme / analiz / ayar ekranları açılmaz; firma seçme ekranına yönlendirilirsiniz.
 - Son seçilen firma bir sonraki açılışta otomatik açılır.
 - **Tüm Verileri Sil** (Firma ve Veri Ayarları) yalnızca aktif firmanın fatura ve yevmiye kayıtlarını siler.
@@ -95,7 +95,7 @@ Fatura Excel'inde de `Fatura No`, `Fatura Tarihi`, `Satıcı VKN/TCKN`, `Satıc�
 
 | Kontrol | Açıklama |
 |---|---|
-| Fiyat anomalileri | Dönem (aylık/çeyreklik/yıllık) + ürün + birim bazında ağırlıklı ortalama birim fiyattan, kullanıcının belirlediği % eşiği aşan sapmalar (TL, KDV hariç, iadeler hariç) |
+| Fiyat anomalileri | Dönem (aylık/çeyreklik/yıllık) + ürün + birim + para birimi bazında ağırlıklı ortalama birim fiyattan, kullanıcının belirlediği % eşiği aşan sapmalar (belge para biriminde, KDV hariç; iadeler, tevkifatlı faturalar ve hizmet / hakediş kalemleri hariç; aşağıya bakın) |
 | Muhasebeleşmemiş faturalar | Yevmiyede hiçbir yöntemle (aşağıya bakın) karşılığı bulunamayan faturalar |
 | Seçili hesap dışına kaydedilmiş | Belge no (tam ya da seri+sıra) yevmiyede var ama girilen hesap kodlarında değil (yanlış hesap şüphesi) |
 | Tutar farkları | Fatura KDV hariç tutarı ile seçili hesaplardaki yevmiye toplamı arasındaki tolerans üstü farklar |
@@ -107,6 +107,37 @@ Fatura Excel'inde de `Fatura No`, `Fatura Tarihi`, `Satıcı VKN/TCKN`, `Satıc�
 | Olası mükerrer faturalar | Aynı tedarikçi, aynı tarih, aynı tutar, farklı numara |
 | Fatura hesaplama tutarsızlıkları | XML'de satır toplamları / iskonto / KDV ile belge toplamlarının uyuşmaması |
 | Alıcısı firma olmayan faturalar | XML'deki alıcı VKN'si firma VKN'sinden farklı |
+
+### Fiyat anomalileri
+
+Her satırın birim fiyatı (KDV hariç, iskonto sonrası) aynı dönemdeki aynı **ürün + birim + para birimi** grubunun
+ağırlıklı ortalama birim fiyatıyla (AOBF) karşılaştırılır; sapma eşiği (%) aşılırsa satır **YÜKSEK RİSK** olur.
+
+- **Para birimine göre ayrı grup:** EUR ile alınan motorin TL motorinle aynı grupta karşılaştırılmaz. Birim fiyat
+  ve AOBF belge para birimindedir, sapma belge para birimindeki fiyat üzerinden hesaplanır (kur değişimi sapma
+  yaratmaz). `Birim_Fiyat_TL` (fatura kuruyla) ve `Kur` bilgi için gösterilir.
+- **Analize alınmayan satırlar** (sırayla):
+  1. **İade** faturaları (`IADE`, `TEVKIFATIADE`) ve miktarı 0 / boş olan satırlar — her zaman.
+  2. **Tevkifatlı faturalar** (`InvoiceTypeCode` `TEVKIFAT`): taşeron hakedişi, fason hizmet gibi tevkifata tabi
+     işler her ay farklı tutarda faturalanır, birim fiyat karşılaştırması anlamsızdır. Excel'den yüklenen
+     faturalarda fatura tipi bilinmediğinden bu kural yalnızca XML faturalarda işler; Excel faturaları için
+     anahtar kelime listesi kullanılır.
+  3. **Anahtar kelime:** ürün adında listedeki kelimelerden biri **geçen** satırlar (büyük/küçük harf ve Türkçe
+     karakter duyarsız: `işçilik` = `İŞÇİLİK` = `ISCILIK`). Varsayılan:
+     `HAKEDİŞ, İŞÇİLİK, HİZMET, FASON, KİRALAMA, BAKIM, ONARIM, DANIŞMANLIK`. Kelime ürün adının herhangi bir
+     yerinde geçerse eşleşir (`HİZMET` → "Nakliye Hizmeti"); kısa / genel kelimeler eklerken bunu dikkate alın.
+  Her iki kural ayrı ayrı açılıp kapatılabilir; kelime listesi boş bırakılırsa kelime süzgeci uygulanmaz,
+  **Varsayılan** butonu listeyi varsayılana döndürür.
+- **Yetersiz veri:** grupta dönem içinde **en az alım** sayısından (varsayılan 3) az alım varsa sapma eşiği aşsa da
+  satır riskli sayılmaz, `Risk_Durumu` = "Yetersiz veri (bilgi)" olarak raporda kalır. İki alımlı bir grupta
+  iki fiyat ortalamadan simetrik saptığı için hangisinin hatalı olduğu söylenemez (tek alımda sapma zaten 0'dır).
+  `1` girilirse kural kapanır.
+- Kurallar, kelime listesi ve en az alım sayısı **Fiyat Risk Analizi** ve **Genel Denetim Raporu** ekranlarından
+  düzenlenir ve firma başına saklanır.
+- Ekranın ve raporun başında kaç satırın incelendiğini ve kaçının neden analiz dışı kaldığını (iade, tevkifat,
+  anahtar kelime, yetersiz veri) gösteren özet satırı yer alır; Excel'de **Fiyat Analizi Özeti** sayfası olarak
+  da çıkar. **Analiz dışı satırları Excel'e ekle** seçiliyse (varsayılan) hariç tutulan satırlar ve yetersiz veri
+  nedeniyle riskli sayılmayanlar nedenleriyle birlikte **Fiyat Analizi Dışı Satırlar** bilgi sayfasına yazılır.
 
 **Mutabakat notu:** Hesap kodları önek olarak eşleşir (`153` → `153.01`, `153.02.001` …).
 Aynı belgenin karşı hesaplarını (ör. `153` ile `320`) birlikte girmeyin; Borç − Alacak toplamı sıfırlanır.
