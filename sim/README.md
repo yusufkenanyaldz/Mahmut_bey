@@ -29,18 +29,18 @@ yöntemlerinin dağılımını yazdırır. Yalnızca bilgi amaçlı bölümler (
 "Belirsiz Eşleşme (Birden Fazla Seri+Sıra Adayı)") bilinen bir hatayı temsil etmediği için puanlamaya
 katılmaz, yanlış alarm sayılmaz; `sonuclar.json` içinde firma başına `bilgi` alanında ayrıca raporlanır.
 
-| Kontrol | v2.0 yakalanan | v2.0 yanlış alarm | Madde 2 sonrası yakalanan | Madde 2 sonrası yanlış alarm | Madde 3 sonrası yakalanan | Madde 3 sonrası yanlış alarm |
-|---|---|---|---|---|---|---|
-| Muhasebeleşmemiş fatura | 46/46 | 998 | 46/46 | 0 | 46/46 | 0 |
-| Yanlış hesaba kayıt | 51/57 | 0 | 57/57 | 0 | 57/57 | 0 |
-| Tutar farkı | 70/77 | 206 | 77/77 | 272 | 77/77 | 272 |
-| Dönem kayması | 34/43 | 0 | 43/43 | 0 | 43/43 | 0 |
-| Faturasız gider kaydı | 52/52 | 1.404 | 52/52 | 412 | 52/52 | 412 |
-| Mükerrer fatura | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 |
-| Fiyat şişirme | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 |
-| Başka firmaya kesilmiş fatura | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 |
-| XML hesaplama hatası | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 |
-| **Toplam** | **363/385** | **3.683** | **385/385** | **1.759** | **385/385** | **1.759** |
+| Kontrol | v2.0 yakalanan | v2.0 yanlış alarm | Madde 2 sonrası yakalanan | Madde 2 sonrası yanlış alarm | Madde 3 sonrası yakalanan | Madde 3 sonrası yanlış alarm | Madde 4 sonrası yakalanan | Madde 4 sonrası yanlış alarm |
+|---|---|---|---|---|---|---|---|---|
+| Muhasebeleşmemiş fatura | 46/46 | 998 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 |
+| Yanlış hesaba kayıt | 51/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 |
+| Tutar farkı | 70/77 | 206 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 |
+| Dönem kayması | 34/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 |
+| Faturasız gider kaydı | 52/52 | 1.404 | 52/52 | 412 | 52/52 | 412 | 52/52 | 0 |
+| Mükerrer fatura | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 |
+| Fiyat şişirme | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 |
+| Başka firmaya kesilmiş fatura | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 |
+| XML hesaplama hatası | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 |
+| **Toplam** | **363/385** | **3.683** | **385/385** | **1.759** | **385/385** | **1.759** | **385/385** | **1.347** |
 
 Firma seçici (madde 1) sonuçları değiştirmedi; v2.0 sütunu madde 1 sonrası için de geçerlidir.
 
@@ -60,7 +60,7 @@ Firma seçici (madde 1) sonuçları değiştirmedi; v2.0 sütunu madde 1 sonras�
 - Tutar farkındaki +66 yanlış alarm yeni değil: kısa biçimli iki taşımacılık firmasındaki dövizli yakıt
   faturalarının kur farkı (diğer taşımacılık firmalarında zaten görünen tür); bu faturalar önceden hiç
   eşleşmediği için "muhasebeleşmemiş" yanlış alarmı olarak sayılıyordu.
-- Kalan faturasız kayıt yanlış alarmları bordro/amortisman/SMM/gider pusulası kayıtlarıdır (madde 3 kapsamı).
+- Kalan faturasız kayıt yanlış alarmları bordro/amortisman/SMM/gider pusulası kayıtlarıdır (madde 4 ile giderildi).
 - Tutar+tarih kademesinin ayrı stres testi: 14 firmada fatura belgelerinin %30'unun numarası tamamen bozuldu
   (ör. `FIS123456X`); 925 bozuk belgenin 822'si tutar+tarih ile eşleşti, **yanlış eşleşme 0**, gerçek
   muhasebeleşmemiş faturalardan kaçan yok. Eşleşmeyen 103 fatura, tutarı tutmadığı (tutar farkı, KDV dahil
@@ -79,3 +79,21 @@ Firma seçici (madde 1) sonuçları değiştirmedi; v2.0 sütunu madde 1 sonras�
 | Tahmini elle çalışma süresi | 245 dk | 180 dk |
 
 Kalan 9 dosya bilinçli bir tercihtir: belge numarası açıklama metninden çıkarılmaz, ayrı sütunda olmalıdır.
+
+**Madde 4 (faturası bulunmayan yevmiye kayıtları süzgeci)** — diğer kontroller birebir aynı kaldı; değişen
+yalnızca "Faturası Bulunmayan Yevmiye Kayıtları":
+
+| Faturasız kayıt kontrolü | Yakalanan | Yanlış alarm | Yüksek öncelikli kayıt |
+|---|---|---|---|
+| Madde 3 sonrası (süzgeç yok) | 52/52 | 412 (GP 244, AMORT 72, SMM 72, BORDRO 24) | — |
+| Yalnızca borç yönü (boş önek listesi) | 52/52 | 340 (SMM'nin 72'si alacak yönlü olarak elendi) | 52 (52'si de gerçek hata) |
+| Borç yönü + varsayılan önek listesi | 52/52 | **0** (önekle 340 kayıt elendi) | 52 |
+
+- Önek listesi boşken de gerçek 52 hata listenin en üstündedir: hepsi GİB biçimli belge no'su taşıdığı için
+  **Yüksek** öncelikli; kalan 340 olağan kayıt (`GP-…`, `AMORT-…`, `BORDRO-…`) **Düşük** öncelikli olarak altta.
+- Simülasyondaki yevmiyelerin hepsi Borç/Alacak sütunlu (işaretli) olduğundan işaretsiz Tutar durumu burada
+  oluşmuyor; birim testleriyle doğrulanıyor.
+- Varsayılan önekler simülasyona göre değil, yaygın muhasebe pratiğine göre seçildi (`SMM` listede yok; SMM
+  kayıtlarını borç yönü süzgeci eler). `metin.py` boş önek listesiyle ölçümü de her çalıştırmada yazdırır
+  ("Faturasız kayıt, boş önek listesiyle …") ve raporlara **Faturasız Kayıt Özeti** ile
+  **Faturasız Listeden Hariç Tutulanlar** sayfalarını ekler.

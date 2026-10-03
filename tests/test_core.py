@@ -236,7 +236,7 @@ def _gib_scenario():
 
 def test_reconcile_kademeli_eslestirme():
     invoices, journal = _gib_scenario()
-    res = checks.reconcile(invoices, journal, ["153"])
+    res = checks.reconcile(invoices, journal, ["153"], haric_onekler=[])  # önek filtresi yok
     assert list(res["Muhasebeleşmemiş Faturalar"]["Fatura_No"]) == ["XYZ2024000000012"]
     other = res["Seçili Hesap Dışına Kaydedilmiş Faturalar"]
     assert list(other["Fatura_No"]) == ["XYZ2024000000011"]

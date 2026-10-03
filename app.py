@@ -158,6 +158,7 @@ class AuditApp(ctk.CTk):
         self.analysis_df = None
         self.recon_sections = None
         self.audit_sections = None
+        self.recon_haric = self.audit_haric = None
 
         self.title(APP_TITLE)
         self.geometry("1280x800")
@@ -215,13 +216,13 @@ class AuditApp(ctk.CTk):
             return
         self.firm, self.db = self.registry.get(code), db
         self.registry.set_last_firm(self.firm.code)
-        self.analysis_df = self.recon_sections = self.audit_sections = None
+        self.analysis_df = self.recon_sections = self.audit_sections = self.recon_haric = self.audit_haric = None
         self.refresh_firm_display()
         self.show_welcome_screen()
 
     def close_firm(self):
         self.firm = self.db = None
-        self.analysis_df = self.recon_sections = self.audit_sections = None
+        self.analysis_df = self.recon_sections = self.audit_sections = self.recon_haric = self.audit_haric = None
         self.refresh_firm_display()
 
     def refresh_firm_display(self):
@@ -268,6 +269,42 @@ class AuditApp(ctk.CTk):
             return None
         self.db.set_setting("accounts", entry.get().strip())
         return accounts
+
+    def haric_onek_text(self):
+        """Firmanın faturasız kayıt kontrolünde hariç tuttuğu belge no önekleri (hiç kaydedilmediyse varsayılan)."""
+        return self.setting("haric_onekler", checks.VARSAYILAN_HARIC_ONEKLER)
+
+    def read_haric_onekler(self, entry):
+        """Önek listesini firma ayarına kaydeder; boş bırakılırsa önek filtresi uygulanmaz."""
+        text = entry.get().strip()
+        self.db.set_setting("haric_onekler", text)
+        return checks.parse_onek_listesi(text)
+
+    def add_haric_onek_row(self, with_excel_option=True):
+        """Hariç önek listesi satırı: giriş kutusu, Varsayılan butonu ve (istenirse) Excel seçeneği."""
+        row = self.create_button_row()
+        entry = self.add_labeled_entry(row, "Faturasız Kontrolde Hariç Önekler:", self.haric_onek_text(), 380,
+                                       "boş: önek filtresi yok")
+
+        def reset():
+            entry.delete(0, "end")
+            entry.insert(0, checks.VARSAYILAN_HARIC_ONEKLER)
+
+        ctk.CTkButton(row, text="Varsayılan", width=90, height=28, command=reset).pack(side="left", padx=(0, 18))
+        var = None
+        if with_excel_option:
+            var = ctk.BooleanVar(value=self.setting("haric_excel", "0") == "1")
+            ctk.CTkCheckBox(row, text="Hariç tutulanları Excel'e ekle", variable=var, font=self.font_label,
+                            command=lambda: self.db.set_setting("haric_excel", "1" if var.get() else "0")) \
+                .pack(side="left")
+        return entry, var
+
+    @staticmethod
+    def with_haric_sheet(sections, haric, var):
+        """Excel çıktısına, seçiliyse faturasız listeden hariç tutulan kayıtların bilgi sayfasını ekler."""
+        if not sections or haric is None or var is None or not var.get():
+            return sections
+        return OrderedDict(list(sections.items()) + [("Faturasız Listeden Hariç Tutulanlar", haric)])
 
     # ------------------------------------------------------------------ iskelet
     def create_sidebar(self):
@@ -849,17 +886,21 @@ class AuditApp(ctk.CTk):
                            "ABC-2024-123 gibi kısaltılmış yazımlar) ve son çare olarak tek adaylı Tutar+Tarih "
                            f"(±{checks.TARIH_PENCERESI_GUN} gün, düşük güven) ile eşleştirilir. Hesap kodları önek olarak "
                            "eşleşir (153 → 153.01, 153.02 ...). Aynı belgenin karşı hesaplarını (ör. 153 ile 320) "
-                           "birlikte girmeyin; toplamlar birbirini sıfırlar.")
+                           "birlikte girmeyin; toplamlar birbirini sıfırlar. Faturasız kayıt listesine yalnızca "
+                           "borç yönlü belgeler alınır; belge no'su hariç öneklerden biriyle başlayanlar (bordro, "
+                           "amortisman, mahsup ...) listelenmez.")
         opts = self.create_button_row()
         self.accounts_entry = self.add_labeled_entry(opts, "Hesap Kodları:", self.setting("accounts", ""), 220,
                                                      "ör. 153, 770")
         self.tolerance_entry = self.add_labeled_entry(opts, "Tolerans (TL):", self.setting("tolerance", "0.01"), 80)
         self.recon_period_var = self.add_period_menu(opts)
+        self.recon_onek_entry, self.recon_haric_var = self.add_haric_onek_row()
         row = self.create_button_row()
         self.add_button(row, "▶ Mutabakat Kontrolü Yap", self.run_reconciliation,
                         fg_color=("#e83e8f", "#d33682"), hover_color=("#d33682", "#a32a65"))
-        self.add_button(row, "📥 Excel'e Aktar", lambda: self.export_sections_dialog(self.recon_sections,
-                                                                                    "Mutabakat_Raporu.xlsx"),
+        self.add_button(row, "📥 Excel'e Aktar", lambda: self.export_sections_dialog(
+            self.with_haric_sheet(self.recon_sections, self.recon_haric, self.recon_haric_var),
+            "Mutabakat_Raporu.xlsx"),
                         fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
         self.recon_box = self.create_console_box()
         self.log(self.recon_box, "> Mutabakat bekleniyor...")
@@ -875,15 +916,20 @@ class AuditApp(ctk.CTk):
         self.update()
         invoices, journal = self.db.get_invoices_df(), self.db.get_journal_df()
         if invoices.empty or journal.empty:
-            self.recon_sections = None
+            self.recon_sections = self.recon_haric = None
             self.log(box, "[UYARI] İşlem yapılamadı. Hem Fatura hem de Yevmiye kayıtlarının yüklü olduğundan "
                           "emin olun.", "uyari")
             return
-        res = checks.reconcile(invoices, journal, accounts, tolerance, self.recon_period_var.get())
-        self.recon_sections = OrderedDict([("Eşleşme Özeti", checks.eslesme_ozeti_df(res.eslesme_ozeti))]
+        onekler = self.read_haric_onekler(self.recon_onek_entry)
+        res = checks.reconcile(invoices, journal, accounts, tolerance, self.recon_period_var.get(), onekler)
+        self.recon_sections = OrderedDict([("Eşleşme Özeti", checks.eslesme_ozeti_df(res.eslesme_ozeti)),
+                                           ("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(res.faturasiz_ozeti))]
                                           + list(res.items()))
+        self.recon_haric = res.faturasiz_haric
         self.log(box, f"> Hesaplar: {', '.join(accounts)}  |  Tolerans: {tolerance:g} TL")
-        self.log(box, f"> {checks.eslesme_ozeti_metni(res.eslesme_ozeti)}\n")
+        self.log(box, f"> {checks.eslesme_ozeti_metni(res.eslesme_ozeti)}")
+        self.log(box, f"> {checks.faturasiz_ozeti_metni(res.faturasiz_ozeti)}\n",
+                 None if res.faturasiz_ozeti["isaretli"] else "uyari")
         for title, df in res.items():
             self.log_section(box, tr_upper(title), df)
 
@@ -910,11 +956,13 @@ class AuditApp(ctk.CTk):
         self.audit_accounts = self.add_labeled_entry(opts, "Hesap Kodları:", self.setting("accounts", ""), 180,
                                                      "ör. 153, 770")
         self.audit_tolerance = self.add_labeled_entry(opts, "Tolerans (TL):", self.setting("tolerance", "0.01"), 70)
+        self.audit_onek_entry, self.audit_haric_var = self.add_haric_onek_row()
         row = self.create_button_row()
         self.add_button(row, "▶ Tüm Kontrolleri Çalıştır", self.run_full_audit,
                         fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
-        self.add_button(row, "📥 Raporu Excel'e Aktar", lambda: self.export_sections_dialog(self.audit_sections,
-                                                                                           "Denetim_Raporu.xlsx"))
+        self.add_button(row, "📥 Raporu Excel'e Aktar", lambda: self.export_sections_dialog(
+            self.with_haric_sheet(self.audit_sections, self.audit_haric, self.audit_haric_var),
+            "Denetim_Raporu.xlsx"))
         self.audit_box = self.create_console_box()
         self.log(self.audit_box, "> Rapor bekleniyor...")
 
@@ -925,12 +973,14 @@ class AuditApp(ctk.CTk):
             return
         accounts = parse_account_list(self.audit_accounts.get())
         self.db.set_setting("accounts", self.audit_accounts.get().strip())
+        onekler = self.read_haric_onekler(self.audit_onek_entry)
         box = self.audit_box
         box.delete("1.0", "end")
         self.log(box, "> Tüm kontroller çalıştırılıyor...")
         self.update()
         summary, sections, notes, counts = checks.run_full_audit(
-            self.db, self.audit_period_var.get(), threshold, accounts, tolerance, self.firm.vkn)
+            self.db, self.audit_period_var.get(), threshold, accounts, tolerance, self.firm.vkn, onekler)
+        self.audit_haric = counts["faturasiz_haric"]
         if counts["fatura"] == 0:
             self.audit_sections = None
             self.log(box, "[BİLGİ] Veritabanında fatura bulunamadı.", "uyari")
@@ -938,10 +988,12 @@ class AuditApp(ctk.CTk):
         head = [("Özet", summary)]
         if counts["eslesme"]:
             head.append(("Eşleşme Özeti", checks.eslesme_ozeti_df(counts["eslesme"])))
+            head.append(("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(counts["faturasiz_ozeti"])))
         self.audit_sections = OrderedDict(head + list(sections.items()))
         self.log(box, f"> {counts['fatura']} fatura, {counts['yevmiye']} yevmiye satırı incelendi.")
         if counts["eslesme"]:
             self.log(box, f"> {checks.eslesme_ozeti_metni(counts['eslesme'])}")
+            self.log(box, f"> {checks.faturasiz_ozeti_metni(counts['faturasiz_ozeti'])}")
         self.log(box, "")
         self.log(box, "ÖZET", "baslik")
         for _, r in summary.iterrows():
@@ -960,7 +1012,8 @@ class AuditApp(ctk.CTk):
         self.clear_main_frame()
         self.create_header("Firma ve Veri Ayarları",
                            "Firma VKN'si girilirse, alıcısı bu firma olmayan XML faturalar raporlanır. "
-                           "Analiz ayarları (eşik, hesap kodları, tolerans, dönem) bu firmaya özel saklanır.")
+                           "Analiz ayarları (eşik, hesap kodları, tolerans, dönem, faturasız kontrolde hariç tutulan "
+                           "belge no önekleri) bu firmaya özel saklanır.")
         info = ctk.CTkFrame(self.main_frame, fg_color="transparent")
         info.pack(fill="x", padx=40, pady=(10, 8))
         f = self.firm
@@ -969,6 +1022,15 @@ class AuditApp(ctk.CTk):
                           f"Sektör: {f.sector or '-'}\nOluşturulma: {f.created_at or '-'}").pack(fill="x")
         row = self.create_button_row()
         self.add_button(row, "✏️  Firma Bilgilerini Düzenle", lambda: self.show_firm_form(self.firm.code))
+
+        onek_entry, _ = self.add_haric_onek_row(with_excel_option=False)
+
+        def save_onekler():
+            n = len(self.read_haric_onekler(onek_entry))
+            messagebox.showinfo("Tamam", f"Hariç önek listesi kaydedildi ({n} önek)." if n else
+                                "Hariç önek listesi boş kaydedildi; faturasız kontrolde önek filtresi uygulanmayacak.")
+
+        self.add_button(onek_entry.master, "💾 Kaydet", save_onekler)
 
         counts = self.db.counts()
         info2 = ctk.CTkFrame(self.main_frame, fg_color="transparent")
@@ -987,7 +1049,7 @@ class AuditApp(ctk.CTk):
                                            "Devam edilsin mi?", icon="warning"):
             return
         self.db.clear_data()
-        self.analysis_df = self.recon_sections = self.audit_sections = None
+        self.analysis_df = self.recon_sections = self.audit_sections = self.recon_haric = self.audit_haric = None
         messagebox.showinfo("Tamam", "Veriler silindi.")
         self.show_settings_frame()
 

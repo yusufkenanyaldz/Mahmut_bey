@@ -7,7 +7,7 @@ from datetime import date
 
 import pandas as pd
 
-from .utils import normalize_uom, normalize_vkn, period_of
+from .utils import normalize_uom, normalize_vkn, period_of, tr_ascii_upper
 
 TOLERANCE_DEFAULT = 0.01
 
@@ -201,11 +201,14 @@ def _tarih(value):
 
 
 class MutabakatSonucu(OrderedDict):
-    """reconcile() sonucu: OrderedDict(başlık → DataFrame) + eslesme_ozeti (kategori → fatura sayısı)."""
+    """reconcile() sonucu: OrderedDict(başlık → DataFrame) + eslesme_ozeti (kategori → fatura sayısı),
+    faturasiz_ozeti (bkz. faturasiz_kayitlari_ayir) ve faturasiz_haric (listeye alınmayan belgeler)."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.eslesme_ozeti = OrderedDict()
+        self.faturasiz_ozeti = {}
+        self.faturasiz_haric = pd.DataFrame(columns=HARIC_COLS)
 
 
 _OZET_ACIKLAMA = OrderedDict([
@@ -233,9 +236,146 @@ def eslesme_ozeti_df(ozet):
     return pd.DataFrame([{"Eslesme_Yontemi": k, "Fatura_Sayisi": v, "Aciklama": _OZET_ACIKLAMA.get(k, "")}
                          for k, v in (ozet or {}).items()], columns=["Eslesme_Yontemi", "Fatura_Sayisi", "Aciklama"])
 
+# ---------------------------------------------------------------------- faturasız yevmiye kayıtları
+# Faturaya dayanmayan olağan kayıtların yaygın belge no önekleri (firma başına değiştirilebilir)
+VARSAYILAN_HARIC_ONEKLER = "BORDRO, AMORT, MAHSUP, AÇILIŞ, KAPANIŞ, DEVİR, GP"
+ONCELIK_YUKSEK = "Yüksek"
+ONCELIK_DUSUK = "Düşük"
+NEDEN_ALACAK = "Alacak yönlü"
+NEDEN_ONEK = "Hariç önek"
+FATURASIZ_COLS = ["Oncelik", "Yevmiye_Belge_No", "Yevmiye_Tarihi", "Yevmiye_Tutari", "Hesaplar"]
+HARIC_COLS = ["Yevmiye_Belge_No", "Yevmiye_Tarihi", "Yevmiye_Tutari", "Hesaplar", "Haric_Tutulma_Nedeni"]
+
+
+def _onek_anahtari(value):
+    """Önek karşılaştırma anahtarı: büyük/küçük harf, Türkçe karakter ve ayraç (boşluk, -, /, ., _) duyarsız."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    return _AYRAC.sub("", tr_ascii_upper(str(value).strip()))
+
+
+def parse_onek_listesi(text):
+    """'BORDRO, Amort; açılış' → ['BORDRO', 'AMORT', 'ACILIS'] (karşılaştırma anahtarları, tekrarsız)."""
+    out = []
+    for parca in re.split(r"[,;\n]+", str(text or "")):
+        anahtar = _onek_anahtari(parca)
+        if anahtar and anahtar not in out:
+            out.append(anahtar)
+    return out
+
+
+def gib_bicimli(belge_no):
+    """Belge no tam GİB fatura numarası biçiminde mi? (3 karakter seri + 4 hane yıl + 9 hane sıra)"""
+    return bool(_GIB_NO.fullmatch(_onek_anahtari(belge_no)))
+
+
+def haric_onek(belge_no, onekler):
+    """Belge no hariç tutulan öneklerden biriyle başlıyorsa o öneki, değilse None döndürür.
+
+    onekler: parse_onek_listesi() çıktısı. Tam GİB biçimli numaralar (ör. GPS2024000000001) gerçek fatura
+    numarası olduğundan hiçbir önekle hariç tutulmaz.
+    """
+    anahtar = _onek_anahtari(belge_no)
+    if not anahtar or gib_bicimli(belge_no):
+        return None
+    return next((p for p in onekler if anahtar.startswith(p)), None)
+
+
+def belge_onceligi(belge_no):
+    """GİB fatura numarasına benzeyen (tam biçim ya da seri+sıra çözümlemesine uyan) belge no → Yüksek."""
+    return ONCELIK_YUKSEK if belge_anahtarlari(belge_no) else ONCELIK_DUSUK
+
+
+def yevmiye_isaretli(journal):
+    """Yevmiye tutarları işaretli mi (Borç − Alacak)? Hiç negatif tutar yoksa tek 'Tutar' sütunuyla işaretsiz
+    yüklenmiş kabul edilir; çift taraflı bir yevmiyede alacak satırları negatif olur."""
+    if journal is None or journal.empty:
+        return True
+    return bool((pd.to_numeric(journal["amount"], errors="coerce").fillna(0) < 0).any())
+
+
+def faturasiz_kayitlari_ayir(adaylar, onekler=None, tolerance=TOLERANCE_DEFAULT, isaretli=True):
+    """Hiçbir faturayla eşleşmeyen seçili hesap belgelerinden faturasız gider/alış adaylarını ayırır.
+
+    adaylar: Yevmiye_Belge_No, Yevmiye_Tarihi, Yevmiye_Tutari (seçili hesaplarda Borç − Alacak), Hesaplar
+    onekler: parse_onek_listesi() çıktısı; None → VARSAYILAN_HARIC_ONEKLER, [] → önek filtresi yok
+    isaretli: False ise (işaretsiz Tutar) yön bilinmediğinden borç/alacak filtresi uygulanmaz.
+    Sırayla:
+      1. Alacak yönlü: net tutar borç yönünde tolerans üstünde değil (ör. 153 alacak — SMM, stoktan çıkış)
+      2. Hariç önek: belge no hariç tutulan öneklerden biriyle başlıyor (bordro, amortisman, mahsup ...)
+    Kalanlara Oncelik (Yüksek: GİB fatura no biçimi, Düşük: diğer) verilir; önceliğe ve tutara göre sıralanır.
+    Dönüş: (listelenen DataFrame, hariç tutulan DataFrame, özet dict)
+    """
+    if onekler is None:
+        onekler = parse_onek_listesi(VARSAYILAN_HARIC_ONEKLER)
+    df = adaylar.reset_index(drop=True).copy()
+    tutar = pd.to_numeric(df["Yevmiye_Tutari"], errors="coerce").fillna(0.0)
+    neden = pd.Series([None] * len(df), index=df.index, dtype=object)
+    if isaretli:
+        neden[tutar <= tolerance] = NEDEN_ALACAK
+    for idx in df.index[neden.isna()]:
+        p = haric_onek(df.at[idx, "Yevmiye_Belge_No"], onekler)
+        if p:
+            neden[idx] = f"{NEDEN_ONEK} ({p})"
+
+    liste = df[neden.isna()].copy()
+    liste["Oncelik"] = liste["Yevmiye_Belge_No"].map(belge_onceligi)
+    liste["_sira"] = (liste["Oncelik"] != ONCELIK_YUKSEK).astype(int)
+    liste["_tutar"] = pd.to_numeric(liste["Yevmiye_Tutari"], errors="coerce").fillna(0.0).abs()
+    liste = liste.sort_values(["_sira", "_tutar", "Yevmiye_Belge_No"], ascending=[True, False, True],
+                              kind="mergesort")[FATURASIZ_COLS].reset_index(drop=True)
+
+    haric = df[neden.notna()].copy()
+    haric["Haric_Tutulma_Nedeni"] = neden[neden.notna()]
+    haric = haric[HARIC_COLS].reset_index(drop=True)
+
+    ozet = {
+        "listelenen": len(liste),
+        "yuksek": int((liste["Oncelik"] == ONCELIK_YUKSEK).sum()),
+        "dusuk": int((liste["Oncelik"] == ONCELIK_DUSUK).sum()),
+        "alacak_yonlu": int((haric["Haric_Tutulma_Nedeni"] == NEDEN_ALACAK).sum()),
+        "haric_onek": int(haric["Haric_Tutulma_Nedeni"].str.startswith(NEDEN_ONEK).sum()),
+        "isaretli": bool(isaretli),
+        "onekler": list(onekler),
+    }
+    return liste, haric, ozet
+
+
+def faturasiz_ozeti_metni(ozet):
+    """Faturasız kayıt filtresinin özetini tek satırlık metne çevirir."""
+    if not ozet:
+        return ""
+    fmt = lambda n: f"{n:,}".replace(",", ".")  # noqa: E731
+    metin = (f"Faturasız kayıt: {fmt(ozet['listelenen'])} listelendi (Yüksek öncelik: {fmt(ozet['yuksek'])}, "
+             f"Düşük: {fmt(ozet['dusuk'])}) | Listeye alınmayan: ")
+    if ozet["isaretli"]:
+        metin += f"alacak yönlü {fmt(ozet['alacak_yonlu'])}, "
+    metin += f"hariç önek {fmt(ozet['haric_onek'])}"
+    if not ozet["isaretli"]:
+        metin += (" | Yevmiye tutarları işaretsiz (negatif tutar yok): borç/alacak yönü bilinmediği için "
+                  "yön filtresi uygulanmadı")
+    return metin
+
+
+def faturasiz_ozeti_df(ozet):
+    """Faturasız kayıt filtresinin özetini Excel raporu için tabloya çevirir."""
+    cols = ["Kalem", "Kayit_Sayisi", "Aciklama"]
+    if not ozet:
+        return pd.DataFrame(columns=cols)
+    yon = ("Seçili hesaplardaki net tutar (Borç − Alacak) borç yönünde değil (ör. stoktan çıkış, SMM)"
+           if ozet["isaretli"] else "Uygulanmadı: yevmiye tutarları işaretsiz (negatif tutar yok), yön bilinmiyor")
+    rows = [
+        ("Listelenen (Yüksek öncelik)", ozet["yuksek"], "Belge no GİB fatura numarası biçiminde"),
+        ("Listelenen (Düşük öncelik)", ozet["dusuk"], "Belge no fatura numarasına benzemiyor"),
+        ("Hariç: alacak yönlü", ozet["alacak_yonlu"] if ozet["isaretli"] else None, yon),
+        ("Hariç: önek", ozet["haric_onek"],
+         "Hariç tutulan önekler: " + (", ".join(ozet["onekler"]) or "(yok)")),
+    ]
+    return pd.DataFrame(rows, columns=cols)
+
 
 # ---------------------------------------------------------------------- mutabakat
-def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_type="Aylık"):
+def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_type="Aylık", haric_onekler=None):
     """Faturaları (KDV hariç, TL) seçili hesap kodlarındaki yevmiye kayıtlarıyla karşılaştırır.
 
     accounts: normalize edilmiş hesap kodu önekleri listesi (ör. ['153', '770']).
@@ -244,7 +384,9 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
       2. Seri+Sıra: GİB numarasının seri + sıra (+ varsa yıl) anahtarı aynı, tek aday
       3. Tutar+Tarih: belge no uyuşmayan, aynı tutar ve ±TARIH_PENCERESI_GUN gün içinde tek aday (düşük güven)
     Seçili hesap dışı kontrolü 3. kademeden önce (tam + seri/sıra ile) yapılır.
-    Dönüş: MutabakatSonucu (OrderedDict başlık → DataFrame, .eslesme_ozeti)
+    Eşleşmeyen belgeler faturasiz_kayitlari_ayir() ile süzülür (haric_onekler: parse_onek_listesi() çıktısı,
+    None → varsayılan önekler).
+    Dönüş: MutabakatSonucu (OrderedDict başlık → DataFrame, .eslesme_ozeti, .faturasiz_ozeti, .faturasiz_haric)
     """
     res = MutabakatSonucu()
     if not accounts:
@@ -362,8 +504,12 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
         .rename(columns={"Yevmiye_Tutari": "Yevmiye_Tutari_TL"}).reset_index(drop=True)
 
     orphan = sel_grp[~sel_grp["document_no_norm"].isin(invoice_nos | eslesen_belgeler | belirsiz_belgeler)]
-    res["Faturası Bulunmayan Yevmiye Kayıtları"] = orphan[
-        ["Yevmiye_Belge_No", "Yevmiye_Tarihi", "Yevmiye_Tutari", "Hesaplar"]].reset_index(drop=True)
+    # Yalnızca borç yönlü ve hariç önekle başlamayan belgeler faturasız gider/alış adayı sayılır
+    liste, haric, ozet = faturasiz_kayitlari_ayir(
+        orphan[["Yevmiye_Belge_No", "Yevmiye_Tarihi", "Yevmiye_Tutari", "Hesaplar"]], haric_onekler, tolerance,
+        yevmiye_isaretli(jou))
+    res["Faturası Bulunmayan Yevmiye Kayıtları"] = liste
+    res.faturasiz_haric, res.faturasiz_ozeti = haric, ozet
 
     res["Belirsiz Eşleşme (Aynı No Farklı Tedarikçi)"] = ambiguous.rename(columns=base_cols)[
         list(base_cols.values())].sort_values("Fatura_No").reset_index(drop=True)
@@ -442,28 +588,33 @@ def customer_mismatch(invoices, company_vkn):
 
 
 # ---------------------------------------------------------------------- genel rapor
-def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn):
+def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn, haric_onekler=None):
     """Tüm kontrolleri çalıştırır.
 
+    haric_onekler: faturasız kayıt kontrolünde hariç tutulan belge no önekleri (None → varsayılan)
     Dönüş: (özet DataFrame, OrderedDict(başlık → DataFrame), notlar, sayılar)
-    sayılar: {"fatura", "yevmiye", "eslesme"}; eslesme, mutabakat yapıldıysa yöntem → fatura sayısı,
-    yapılmadıysa None.
+    sayılar: {"fatura", "yevmiye", "eslesme", "faturasiz_ozeti", "faturasiz_haric"}; mutabakat yapılmadıysa
+    eslesme / faturasiz_ozeti / faturasiz_haric None.
     """
     invoices = db.get_invoices_df()
     lines = db.get_lines_df()
     journal = db.get_journal_df()
     sections = OrderedDict()
     notes = []
-    eslesme = None
+    eslesme = faturasiz_ozeti = faturasiz_haric = None
 
     prices = price_anomalies(lines, period_type, threshold)
     sections[f"Fiyat Anomalileri (±%{threshold:g})"] = prices[prices["Risk_Durumu"] == "YÜKSEK RİSK"] \
         .reset_index(drop=True)
 
     if accounts and not journal.empty:
-        recon = reconcile(invoices, journal, accounts, tolerance, period_type)
+        recon = reconcile(invoices, journal, accounts, tolerance, period_type, haric_onekler)
         sections.update(recon)
         eslesme = recon.eslesme_ozeti
+        faturasiz_ozeti, faturasiz_haric = recon.faturasiz_ozeti, recon.faturasiz_haric
+        if not faturasiz_ozeti["isaretli"]:
+            notes.append("Yevmiye tutarları işaretsiz (negatif tutar yok); faturasız kayıt kontrolünde "
+                         "borç/alacak yönü filtresi uygulanmadı.")
     elif not accounts:
         notes.append("Mutabakat hesap kodu girilmediği için mutabakat kontrolleri atlandı.")
     else:
@@ -478,4 +629,5 @@ def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn)
 
     summary = pd.DataFrame(
         [{"Kontrol": name, "Bulgu_Sayisi": len(df)} for name, df in sections.items()])
-    return summary, sections, notes, {"fatura": len(invoices), "yevmiye": len(journal), "eslesme": eslesme}
+    return summary, sections, notes, {"fatura": len(invoices), "yevmiye": len(journal), "eslesme": eslesme,
+                                      "faturasiz_ozeti": faturasiz_ozeti, "faturasiz_haric": faturasiz_haric}

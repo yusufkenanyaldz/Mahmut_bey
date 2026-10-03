@@ -31,6 +31,7 @@ SECTION_TRUTH = {
     "Alıcısı Firma Olmayan Faturalar": ["baska_firma_faturasi"],
     "Fatura Hesaplama Tutarsızlıkları": ["xml_hesap_hatasi"],
 }
+FATURASIZ = "Faturası Bulunmayan Yevmiye Kayıtları"
 # Bilinen bir hatayı temsil etmeyen, bilgi amaçlı bölümler: yanlış alarm sayılmaz, ayrıca raporlanır.
 # "Belge No Uyuşmayan Eşleşmeler" belge_style="kisa" vb. firmalarda dolabilir (belge no yazım hatası bulgusu).
 INFO_SECTIONS = {
@@ -208,6 +209,15 @@ def print_totals(all_results):
     for k, (a, b, c, n) in style.items():
         print(f"  {k:9s} firma={n:2d} yakalanan={a:3d}/{b:3d} yanlış alarm={c:5d} bilgi={dict(bilgi[k])}")
     print("Eşleştirme yöntemleri:", dict(yontem))
+    fz = Counter()
+    for r in all_results:
+        fz.update({k: v for k, v in r["faturasiz_ozeti"].items() if k != "isaretli"})
+    bos = [sum(r["onek_bos_faturasiz"][k] for r in all_results) for k in ("bulunan", "beklenen", "yanlis_alarm")]
+    print(f"Faturasız kayıt filtresi: listelenen={fz['listelenen']} (Yüksek={fz['yuksek']}, Düşük={fz['dusuk']}) "
+          f"hariç: alacak yönlü={fz['alacak_yonlu']}, önek={fz['haric_onek']}  "
+          f"işaretsiz yevmiye={sum(1 for r in all_results if not r['faturasiz_ozeti']['isaretli'])}")
+    print(f"Faturasız kayıt, boş önek listesiyle (yalnızca borç yönü): {bos[0]}/{bos[1]} yanlış alarm={bos[2]} "
+          f"(Yüksek öncelikli: {sum(r['onek_bos_faturasiz']['yuksek_oncelik'] for r in all_results)})")
     elle = Counter(f for r in all_results for f in r["friction"])
     n_elle = sum(1 for r in all_results if r["friction"])
     print(f"Elle müdahale gereken yevmiye dosyası: {n_elle}/{len(all_results)} {dict(elle)}  "
@@ -233,9 +243,16 @@ def main():
         summary, sections, notes, counts = checks.run_full_audit(db, "Aylık", 15.0, accounts, 0.01, firm.vkn)
         log["t_audit"] = round(time.time() - t, 1)
         export_sections(os.path.join(WORK, f"{meta['code']}_Denetim_Raporu.xlsx"),
-                        dict([("Özet", summary), ("Eşleşme Özeti", checks.eslesme_ozeti_df(counts["eslesme"]))]
-                             + list(sections.items())))
+                        dict([("Özet", summary), ("Eşleşme Özeti", checks.eslesme_ozeti_df(counts["eslesme"])),
+                              ("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(counts["faturasiz_ozeti"]))]
+                             + list(sections.items())
+                             + [("Faturasız Listeden Hariç Tutulanlar", counts["faturasiz_haric"])]))
         sc, fp = score(meta, sections)
+        log["faturasiz_ozeti"] = {k: v for k, v in counts["faturasiz_ozeti"].items() if k != "onekler"}
+        # Önek listesinin katkısı: boş önek listesiyle (yalnızca borç yönü filtresi) aynı kontrol
+        bos = checks.reconcile(db.get_invoices_df(), db.get_journal_df(), accounts, 0.01, "Aylık", haric_onekler=[])
+        log["onek_bos_faturasiz"] = dict(score(meta, {FATURASIZ: bos[FATURASIZ]})[0][FATURASIZ],
+                                         yuksek_oncelik=bos.faturasiz_ozeti["yuksek"])
         log["eslesme"] = dict(counts["eslesme"] or {})
         log["bilgi"] = info(sections)
         # Metin'in ikinci denemesi: dövizli firmalarda tolerans 50 TL

@@ -30,7 +30,8 @@ tutulur; firma değiştirmek için veri silmek ya da dosya kopyalamak gerekmez.
 - Firma kaydı: **kod / kısa ad** (benzersiz, büyük/küçük harf duyarsız), **unvan**, **VKN/TCKN** (isteğe bağlı,
   10 ya da 11 hane), **sektör** (isteğe bağlı) ve oluşturulma tarihi. Alıcı VKN kontrolü aktif firmanın
   VKN'sini kullanır. Kod sonradan değiştirilebilir; firmanın veritabanı dosyası değişmez.
-- Analiz ayarları (sapma eşiği, hesap kodları, tolerans, dönem tipi) firma başına saklanır.
+- Analiz ayarları (sapma eşiği, hesap kodları, tolerans, dönem tipi, faturasız kontrolde hariç tutulan belge no
+  önekleri) firma başına saklanır.
 - Firma seçilmeden veri yükleme / analiz / ayar ekranları açılmaz; firma seçme ekranına yönlendirilirsiniz.
 - Son seçilen firma bir sonraki açılışta otomatik açılır.
 - **Tüm Verileri Sil** (Firma ve Veri Ayarları) yalnızca aktif firmanın fatura ve yevmiye kayıtlarını siler.
@@ -100,7 +101,7 @@ Fatura Excel'inde de `Fatura No`, `Fatura Tarihi`, `Satıcı VKN/TCKN`, `Satıc�
 | Tutar farkları | Fatura KDV hariç tutarı ile seçili hesaplardaki yevmiye toplamı arasındaki tolerans üstü farklar |
 | Dönem farkları | Fatura dönemi ile yevmiye kayıt dönemi farklı |
 | Belge no uyuşmayan eşleşmeler | Belge no tutmadığı için tutar + tarih ile eşleştirilen faturalar (belge no yazım hatası; kontrol edin) |
-| Faturası bulunmayan yevmiye kayıtları | Seçili hesaplarda olup hiçbir yöntemle bir faturayla eşleşmeyen belgeler |
+| Faturası bulunmayan yevmiye kayıtları | Seçili hesaplarda olup hiçbir yöntemle bir faturayla eşleşmeyen, net borç yönlü ve hariç önekle başlamayan belgeler (faturasız gider/alış adayları; öncelik sütunlu, aşağıya bakın) |
 | Belirsiz eşleşme (aynı no) | Aynı fatura numarası birden fazla tedarikçide (yevmiyede VKN olmadığından eşleşme belirsiz) |
 | Belirsiz eşleşme (seri+sıra) | Kısaltılmış belge no birden fazla faturaya ya da fatura birden fazla belgeye uyuyor |
 | Olası mükerrer faturalar | Aynı tedarikçi, aynı tarih, aynı tutar, farklı numara |
@@ -130,6 +131,37 @@ bulunan fatura tutar+tarih ile seçili hesaptaki başka bir kayda bağlanmaz). H
 belirsiz adayı olan belge "faturası bulunmayan" sayılmaz. Mutabakat ekranının başında ve genel raporda kaç
 faturanın hangi yöntemle eşleştiğini gösteren özet satırı yer alır; Excel raporunda **Eşleşme Özeti** sayfası
 olarak da çıkar.
+
+### Faturası bulunmayan yevmiye kayıtları
+
+Eşleşmeyen her belge listelenmez; faturaya zaten dayanmayan olağan kayıtlar (bordro, amortisman, satılan malın
+maliyeti, gider pusulası, mahsup fişleri …) gerçek sahte / eksik belgeli giderleri kalabalığın içinde
+kaybettirmesin diye iki süzgeç uygulanır:
+
+1. **Yalnızca borç tarafı:** belgenin seçili hesaplardaki net tutarı (Borç − Alacak) borç yönünde ve tolerans
+   üstünde olmalıdır. Net alacak yönlü (ör. `153` alacak — SMM, stoktan çıkış) ya da sıfır netli belgeler
+   listeye alınmaz.
+   - **İşaretsiz yevmiye:** yevmiyede hiç negatif tutar yoksa (tek `Tutar` sütunuyla, alacaklar da pozitif
+     yazılarak yüklenmişse) borç/alacak yönü bilinemez; bu süzgeç **uygulanmaz** ve ekranda / raporda
+     "Yevmiye tutarları işaretsiz … yön filtresi uygulanmadı" notu çıkar. Çift taraflı Borç/Alacak dökümünde
+     alacak satırları negatif olduğundan bu durum kendiliğinden ayırt edilir.
+2. **Hariç tutulan belge önekleri:** belge no'su listedeki öneklerden biriyle başlayan kayıtlar listeye alınmaz.
+   Liste firma başına saklanır, virgülle ayrılır ve mutabakat, genel rapor ve Firma ve Veri Ayarları ekranlarından
+   düzenlenir (**Varsayılan** butonu varsayılana döndürür; boş bırakılırsa önek süzgeci uygulanmaz).
+   Varsayılan: `BORDRO, AMORT, MAHSUP, AÇILIŞ, KAPANIŞ, DEVİR, GP` (GP = gider pusulası).
+   Karşılaştırma büyük/küçük harf, Türkçe karakter ve ayraç duyarsızdır (`açılış`, `ACILIS-01`, `Açılış Fişi`
+   hepsi `AÇILIŞ` önekine uyar; `GP-07001` ve `gp 12` → `GP`). Tam GİB biçimli numaralar
+   (`GPS2024000000123` gibi) gerçek fatura numarası olduğundan hiçbir önekle hariç tutulmaz.
+
+Kalan kayıtlara **Oncelik** sütunu eklenir: belge no'su GİB fatura numarasına benzeyenler (3 karakter seri +
+4 hane yıl + 9 hane sıra ya da seri+sıra çözümlemesine uyan `ABC-2024-123`, `ABC123` gibi yazımlar) **Yüksek**,
+diğerleri **Düşük**. Liste önce önceliğe, sonra tutara (büyükten küçüğe) göre sıralanır; düşük öncelikliler de
+listede kalır.
+
+Ekranda ve raporda kaç kaydın listelendiğini ve kaçının neden (alacak yönlü, hariç önek) listeye alınmadığını
+gösteren bir özet satırı yer alır; Excel raporunda **Faturasız Kayıt Özeti** sayfası olarak da çıkar.
+**Hariç tutulanları Excel'e ekle** seçiliyse listeye alınmayan kayıtlar nedenleriyle birlikte
+**Faturasız Listeden Hariç Tutulanlar** bilgi sayfasına yazılır.
 
 ## Veri güvenliği
 

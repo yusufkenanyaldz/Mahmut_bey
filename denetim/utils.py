@@ -155,6 +155,11 @@ def tr_upper(text):
     return str(text).replace("i", "İ").replace("ı", "I").upper()
 
 
+def tr_ascii_upper(text):
+    """Büyük/küçük harf ve Türkçe karakter duyarsız karşılaştırma anahtarı: 'Açılış' → 'ACILIS'."""
+    return tr_upper(text).translate(_TR_ASCII)
+
+
 # UBL-TR (UN/ECE Rec. 20) birim kodları ve yaygın Türkçe yazımlar → ortak birim
 _UOM_MAP = {
     "C62": "ADET", "NIU": "ADET", "EA": "ADET", "AD": "ADET", "ADT": "ADET", "ADET": "ADET", "PCS": "ADET",
