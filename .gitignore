@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 audit_data.db
 *.db
+sim/firmalar/
+sim/calisma/
+sim/sonuclar.json
