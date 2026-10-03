@@ -11,7 +11,19 @@ python sim/metin.py      # her firmayı programın kodu ile denetler, sim/sonucl
 - 5 sektör: İnşaat (8), Halı Üretimi (7), Uluslararası Taşımacılık (8), Otomotiv Satış ve Kiralama (8), Muhtelif İmalat (9)
 - Her firmaya bilinen hatalar yerleştirilir (`meta.json` → `truth`): muhasebeleşmemiş fatura, yanlış hesap, tutar farkı,
   KDV'nin maliyete eklenmesi, çift kayıt, dönem kayması, faturasız gider, mükerrer fatura, fiyat şişirme,
-  başka firmaya kesilmiş fatura, XML hesaplama hatası.
+  başka firmaya kesilmiş fatura, XML hesaplama hatası; madde 7 ile ÖTV'nin maliyete eklenmemesi, KDV farkı, KDV'nin
+  hiç kaydedilmemesi, tevkifat kaydı eksik/yanlış, muhasebeleşmemiş satış, satış tutar / KDV farkı, satış dönem kayması
+  ve faturasız gelir kaydı.
+- Madde 7: otomotiv araç alımlarında ÖTV (9077; XML'de satır ve belge düzeyinde, Excel'de `ÖTV Tutarı` sütunu) ve
+  doğru kayıtta 153/254'e matrah + ÖTV; tevkifatlı faturalarda `WithholdingTaxTotal` ve yevmiyede 360 alacak kaydı;
+  her firmaya giden satış faturaları (XML firmalarında ZIP'te `giden/` ya da `xml/` klasöründe, Excel firmalarında
+  `faturalar.xlsx` içinde `Yön` = Satış satırları). Halı ve imalat firmalarında satışların bir kısmı EUR ihracat
+  (IHRACAT / ISTISNA, 601), taşımacılıkta uluslararası taşıma istisnası (ISTISNA). Yevmiyedeki 120/600/391 kayıtları
+  eski gürültü satışlarının (`SAT…` belgeleri) yerine bu faturalarla eşleşir: aynı tarih ve tutarlar kullanılır.
+- Madde 7 eklemeleri ayrı rastgele üreteçle (`random.Random(7000 + firma no)`) üretilir; gürültü satışlarının
+  rastgele çekilişleri de korunur. Böylece mevcut hata türlerinin listeleri, firma bilgileri ve otomotiv dışı alış
+  XML'leri madde 6 verisiyle birebir aynıdır (yalnızca otomotiv alışlarına ÖTV eklenir).
+- `python sim/generate.py <klasör>` başka bir klasöre üretir (önce/sonra karşılaştırması için).
 - Gerçekçi gürültü: bordro/amortisman/SMM/gider pusulası kayıtları, taşeron hakedişleri, dövizli yakıt faturaları,
   aynı gün aynı model araç alımları, farklı muhasebe programı döküm biçimleri ve belge no yazım biçimleri.
 - `metin.py` yevmiye dosyasını olduğu gibi yükler; başlık satırlarını ve "Borç Tutarı" gibi sütun adlarını program
@@ -29,18 +41,22 @@ yöntemlerinin dağılımını yazdırır. Yalnızca bilgi amaçlı bölümler (
 "Belirsiz Eşleşme (Birden Fazla Seri+Sıra Adayı)") bilinen bir hatayı temsil etmediği için puanlamaya
 katılmaz, yanlış alarm sayılmaz; `sonuclar.json` içinde firma başına `bilgi` alanında ayrıca raporlanır.
 
-| Kontrol | v2.0 yakalanan | v2.0 yanlış alarm | Madde 2 sonrası yakalanan | Madde 2 sonrası yanlış alarm | Madde 3 sonrası yakalanan | Madde 3 sonrası yanlış alarm | Madde 4 sonrası yakalanan | Madde 4 sonrası yanlış alarm | Madde 5 sonrası yakalanan | Madde 5 sonrası yanlış alarm | Madde 6 sonrası yakalanan | Madde 6 sonrası yanlış alarm |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Muhasebeleşmemiş fatura | 46/46 | 998 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 |
-| Yanlış hesaba kayıt | 51/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 |
-| Tutar farkı | 70/77 | 206 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 | 77/77 | **11** |
-| Dönem kayması | 34/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 |
-| Faturasız gider kaydı | 52/52 | 1.404 | 52/52 | 412 | 52/52 | 412 | 52/52 | 0 | 52/52 | 0 | 52/52 | 0 |
-| Mükerrer fatura | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 (incelemeden sonra açık: 0) |
-| Fiyat şişirme | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | **7** | 41/41 | 7 |
-| Başka firmaya kesilmiş fatura | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 |
-| XML hesaplama hatası | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 |
-| **Toplam** | **363/385** | **3.683** | **385/385** | **1.759** | **385/385** | **1.759** | **385/385** | **1.347** | **385/385** | **538** | **385/385** | **277** (incelemeden sonra açık: **0**) |
+| Kontrol | v2.0 yakalanan | v2.0 yanlış alarm | Madde 2 sonrası yakalanan | Madde 2 sonrası yanlış alarm | Madde 3 sonrası yakalanan | Madde 3 sonrası yanlış alarm | Madde 4 sonrası yakalanan | Madde 4 sonrası yanlış alarm | Madde 5 sonrası yakalanan | Madde 5 sonrası yanlış alarm | Madde 6 sonrası yakalanan | Madde 6 sonrası yanlış alarm | Madde 7 sonrası yakalanan | Madde 7 sonrası yanlış alarm |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Muhasebeleşmemiş fatura | 46/46 | 998 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 | 46/46 | 0 |
+| Yanlış hesaba kayıt | 51/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 | 57/57 | 0 |
+| Tutar farkı | 70/77 | 206 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 | 77/77 | 272 | 77/77 | **11** | 94/94 | 11 |
+| Dönem kayması | 34/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 | 43/43 | 0 |
+| Faturasız gider kaydı | 52/52 | 1.404 | 52/52 | 412 | 52/52 | 412 | 52/52 | 0 | 52/52 | 0 | 52/52 | 0 | 52/52 | 0 |
+| Mükerrer fatura | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 | 41/41 | 259 (incelemeden sonra açık: 0) | 41/41 | 259 (incelemeden sonra açık: 0) |
+| Fiyat şişirme | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | 816 | 41/41 | **7** | 41/41 | 7 | 41/41 | 7 |
+| Başka firmaya kesilmiş fatura | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 | 20/20 | 0 |
+| XML hesaplama hatası | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 | 8/8 | 0 |
+| **Toplam** | **363/385** | **3.683** | **385/385** | **1.759** | **385/385** | **1.759** | **385/385** | **1.347** | **385/385** | **538** | **385/385** | **277** (incelemeden sonra açık: **0**) | **385/385** (yeni hatalarla **665/665**) | **277** (incelemeden sonra açık: **0**) |
+
+**Madde 7 sonrası** sütunu yeni veridir (satış faturaları, ÖTV, yeni hata türleri). Tutar farkındaki 94 beklenen hata
+77 eski hata + 17 "ÖTV maliyete eklenmemiş" hatasıdır. Mevcut kontroller eski veride (madde 6 verisi, yeni kodla)
+madde 6 sütunuyla birebir aynıdır: 385/385, 277 yanlış alarm.
 
 Firma seçici (madde 1) sonuçları değiştirmedi; v2.0 sütunu madde 1 sonrası için de geçerlidir. Madde 6 sütunu
 varsayılan %1 kur toleransıyla, inceleme işaretleri uygulanmadan (ilk çalıştırma) ölçülmüştür; "incelemeden sonra
@@ -184,3 +200,46 @@ aynı dosyalar yeniden içe aktarılır (yeni veritabanı kimlikleri) ve rapor y
 - Raporlara **İnceleme Özeti** ve **Kur Farkı (Tolerans İçi)** sayfaları ile bulgu sayfalarına `Inceleme_Durumu`,
   `Inceleme_Notu`, `Inceleme_Tarihi`, `Bulgu_Anahtari` sütunları eklendi (`sim/calisma/<KOD>_Denetim_Raporu.xlsx`
   ikinci çalıştırmanın raporudur).
+
+**Madde 7 (ÖTV, KDV / tevkifat mutabakatı, satış faturaları)** — yeni veride 40 firma: 2.989 satış faturası (798'i
+ihracat / istisna), ÖTV'li 2.444 araç alım faturası (toplam ÖTV 2,44 milyar TL), 589 tevkifatlı alış faturası.
+
+Yeni kontroller (yeni veri, varsayılan ayarlar: 191, 360, gelir 600/601/602, hesaplanan KDV 391):
+
+| Kontrol | Bilinen hata türü | Yakalanan | Yanlış alarm |
+|---|---|---|---|
+| Tutar farkı (ÖTV maliyete eklenmemiş) | `otv_maliyete_eklenmemis` (ÖTV 770'e yazılmış) | 17/17 (Tutar Farkları'nda; `Olasi_Neden` dolu) | 0 |
+| KDV Farkları | `kdv_farki` (26) + `cift_kayit` (10) | 36/36 | 0 |
+| KDV'si Kaydedilmemiş Faturalar | `kdv_kaydedilmemis` (30) + `kdv_dahil_kayit` (35) | 65/65 | 0 |
+| Tevkifat Kaydı Eksik/Farklı | `tevkifat_kaydi_eksik` (360 yok ya da 5/10 ile yazılmış) | 8/8 | 0 |
+| Muhasebeleşmemiş Satış Faturaları | `muhasebelesmemis_satis` | 29/29 | 0 |
+| Satış Tutar Farkları | `satis_tutar_farki` | 28/28 | 0 |
+| Satış Dönem Farkları | `satis_donem_kaymasi` | 31/31 | 0 |
+| Satış KDV Farkları | `satis_kdv_farki` (%10 yazılmış, 391 yok, istisnaya KDV) | 28/28 | 0 |
+| Faturası Bulunmayan Gelir Kayıtları | `faturasiz_gelir` | 38/38 | 0 |
+| Gelir Hesabı Dışına Kaydedilmiş Satış Faturaları | — | — | 0 |
+| **Toplam (tüm kontroller)** | | **665/665** | **277** (hepsi madde 6'dan kalan türler; incelemeden sonra açık **0**) |
+
+Önce / sonra (mevcut 9 kontrolün yakalaması ve yanlış alarmı):
+
+| | Eski veri (madde 6) | Yeni veri (madde 7) |
+|---|---|---|
+| Madde 6 kodu | 385/385, 277 yanlış alarm | 385/385, **9.345** yanlış alarm |
+| Madde 7 kodu | 385/385, 277 yanlış alarm (yeni kontroller: KDV 45/45, 0 yanlış alarm) | 385/385 (+17 ÖTV hatası), 277 yanlış alarm |
+
+- Madde 6 kodunun yeni verideki 9.345 yanlış alarmı = önceki 277 + 9.068 yeni: satış faturaları alış sayıldığı için
+  seçili hesap dışı +2.960, alıcısı firma olmayan +2.188, fiyat anomalisi +1.490 (satış kalemleri), muhasebeleşmemiş
+  +29 (kaydı olmayan satışlar); ÖTV maliyete eklenmediği için otomotiv firmalarında tutar farkı +2.401 (ÖTV'li hemen
+  her araç faturası). Madde 7 kodu bunların hepsini gidermektedir.
+- Madde 7 kodu eski veride: KDV Farkları 10/10 (çift kayıtlar), KDV'si Kaydedilmemiş 35/35 (KDV'nin maliyete eklendiği
+  kayıtlar) — mevcut hatalar ikinci bir kontrolde de yakalanıyor. Eski veride satış faturası olmadığından satış
+  mutabakatı çalışmaz. İlk ölçümde Excel firmalarındaki iade faturaları (Excel'de fatura tipi yok) "ters yönde KDV"
+  olarak 20 yanlış alarm verdi; KDV yön kontrolü yalnızca XML faturalara uygulanarak giderildi.
+- Satış eşleştirmesi: Tam 2.684, Seri+Sıra 276 (kısa belge no'lu firmalar), eşleşmeyen 29 (= muhasebeleşmemiş satış
+  hataları). Satış KDV'si 2.960 faturada karşılaştırıldı (791'i ihracat / istisna, KDV beklenmez).
+- Satış kur farkı (tolerans içi, bilgi) 183: Excel'den yüklenen EUR ihracat faturalarında birim fiyat 4 haneye
+  yuvarlandığı için oluşan kuruş farkları (bulgu sayılmaz).
+- Tevkifat kontrolü yalnızca XML firmalarında: Excel şablonundaki alış satırlarında `Tevkifat_Orani` verilmediği için
+  (portal dökümünü temsil eder) Excel firmalarının tevkifatlı faturaları kontrol dışındadır.
+- Bulgu inceleme senaryosu yeni bölümlerde de çalışıyor: 2. çalıştırmada açık yanlış alarm 0, gerçek hata açık
+  665/665.

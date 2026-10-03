@@ -23,15 +23,28 @@ os.makedirs(WORK, exist_ok=True)
 SECTION_TRUTH = {
     "Muhasebeleşmemiş Faturalar": ["muhasebelesmemis"],
     "Seçili Hesap Dışına Kaydedilmiş Faturalar": ["yanlis_hesap"],
-    "Tutar Farkları": ["tutar_farki", "kdv_dahil_kayit", "cift_kayit"],
+    "Tutar Farkları": ["tutar_farki", "kdv_dahil_kayit", "cift_kayit", "otv_maliyete_eklenmemis"],
     "Dönem Farkları": ["donem_kaymasi"],
     "Faturası Bulunmayan Yevmiye Kayıtları": ["faturasiz_gider"],
     "Olası Mükerrer Faturalar": ["mukerrer_fatura"],
     "Fiyat Anomalileri": ["fiyat_sisirme"],
     "Alıcısı Firma Olmayan Faturalar": ["baska_firma_faturasi"],
     "Fatura Hesaplama Tutarsızlıkları": ["xml_hesap_hatasi"],
+    # Madde 7: KDV (191), tevkifat (360) ve satış mutabakatı. Çift kayıtta 191 de iki kez yazılır; KDV'nin maliyete
+    # eklendiği kayıtta (kdv_dahil_kayit) 191 kaydı yoktur.
+    "KDV Farkları": ["kdv_farki", "cift_kayit"],
+    "KDV'si Kaydedilmemiş Faturalar": ["kdv_kaydedilmemis", "kdv_dahil_kayit"],
+    "Tevkifat Kaydı Eksik/Farklı": ["tevkifat_kaydi_eksik"],
+    "Muhasebeleşmemiş Satış Faturaları": ["muhasebelesmemis_satis"],
+    "Gelir Hesabı Dışına Kaydedilmiş Satış Faturaları": [],
+    "Satış Tutar Farkları": ["satis_tutar_farki"],
+    "Satış Dönem Farkları": ["satis_donem_kaymasi"],
+    "Satış KDV Farkları": ["satis_kdv_farki"],
+    "Faturası Bulunmayan Gelir Kayıtları": ["faturasiz_gelir"],
 }
 FATURASIZ = "Faturası Bulunmayan Yevmiye Kayıtları"
+FATURASIZ_GELIR = "Faturası Bulunmayan Gelir Kayıtları"
+BELGE_SUTUNLU = {FATURASIZ, FATURASIZ_GELIR}  # Bulgu fatura değil yevmiye belgesi
 ESIKLER = (10, 15, 25, 35)
 KUR_TOLERANSLARI = (0, 0.5, 1, 2)
 DURUM_KISA = {inceleme.DURUM_ACIK: "acik", inceleme.DURUM_SORUN_YOK: "sorun_yok",
@@ -42,6 +55,8 @@ MIN_ALIMLAR = (1, 2, 3, 4, 5)
 INFO_SECTIONS = {
     "Belge No Uyuşmayan Eşleşmeler": "belge_no_uyusmayan",
     "Belirsiz Eşleşme (Birden Fazla Seri+Sıra Adayı)": "belirsiz_seri_sira",
+    "Satış Belge No Uyuşmayan Eşleşmeler": "satis_belge_no_uyusmayan",
+    "Satış Belirsiz Eşleşme (Birden Fazla Seri+Sıra Adayı)": "satis_belirsiz_seri_sira",
 }
 # Elle müdahale süresi tahmini (dakika). Başlık satırı ve "Borç Tutarı" gibi sütun adlarını program kendisi
 # çözdüğü için (madde 3) yalnızca belge no'su ayrı sütunda olmayan dökümler için muhasebeciden yeni döküm istenir.
@@ -87,7 +102,7 @@ def import_firm(meta, db, log):
     xl = os.path.join(d, "faturalar.xlsx")
     if os.path.exists(xl):
         data = open(xl, "rb").read()
-        res = importers.read_invoice_excel(data, "faturalar.xlsx")
+        res = importers.read_invoice_excel(data, "faturalar.xlsx", company_vkn=meta["vkn"])
         errors += res.errors
         warnings += res.warnings
         n, dups = db.save_invoices(res.items, "FATURA_EXCEL", "faturalar.xlsx", importers.file_hash(data))
@@ -122,9 +137,9 @@ def import_firm(meta, db, log):
 def classify_fp(section, row, meta):
     """Yanlış alarmın nedenini sınıflandırır."""
     foreign = set(meta["foreign_invoices"])
-    if section == "Faturası Bulunmayan Yevmiye Kayıtları":
+    if section in BELGE_SUTUNLU:
         doc = str(row["Yevmiye_Belge_No"])
-        for p in ("BORDRO", "AMORT", "SMM", "GP-"):
+        for p in ("BORDRO", "AMORT", "SMM", "GP-", "SAT"):
             if doc.startswith(p):
                 return f"faturasız olağan kayıt ({p})"
         return "belge no biçimi eşleşmedi"
@@ -133,7 +148,11 @@ def classify_fp(section, row, meta):
     if section == "Tutar Farkları":
         if row["Fatura_No"] in foreign:
             return "dövizli fatura kur farkı"
-        return "diğer"
+        return f"diğer ({row['Olasi_Neden']})" if row.get("Olasi_Neden") else "diğer"
+    if section in ("KDV Farkları", "KDV'si Kaydedilmemiş Faturalar"):
+        return f"neden: {row.get('Olasi_Neden') or '-'}"
+    if section in ("Tevkifat Kaydı Eksik/Farklı", "Satış KDV Farkları"):
+        return f"durum: {row.get('Durum')}"
     if section == "Fiyat Anomalileri":
         return "ürün: " + str(row["Urun_Adi"])
     if section == "Olası Mükerrer Faturalar":
@@ -159,8 +178,8 @@ def score(meta, sections):
             for r in fp_rows:
                 fp_causes[key][classify_fp(key, r, meta)] += 1
             continue
-        expected = {normalize_doc_no(x) for t in exp_types for x in truth[t]}
-        col = "Yevmiye_Belge_No" if key == "Faturası Bulunmayan Yevmiye Kayıtları" else "Fatura_No"
+        expected = {normalize_doc_no(x) for t in exp_types for x in truth.get(t, [])}
+        col = "Yevmiye_Belge_No" if key in BELGE_SUTUNLU else "Fatura_No"
         found = {normalize_doc_no(x) for x in df[col]} if not df.empty else set()
         tp = expected & found
         res[key] = {"beklenen": len(expected), "bulunan": len(tp), "yanlis_alarm": len(found - expected)}
@@ -181,8 +200,8 @@ def gercek_bulgu_maskesi(key, df, meta):
     if key == "Olası Mükerrer Faturalar":
         pairs = [set(p) for p in truth["mukerrer_fatura"]]
         return [any(p <= set(str(s).split(", ")) for p in pairs) for s in df["Fatura_No"]]
-    expected = {normalize_doc_no(x) for t in SECTION_TRUTH[key] for x in truth[t]}
-    col = "Yevmiye_Belge_No" if key == FATURASIZ else "Fatura_No"
+    expected = {normalize_doc_no(x) for t in SECTION_TRUTH[key] for x in truth.get(t, [])}
+    col = "Yevmiye_Belge_No" if key in BELGE_SUTUNLU else "Fatura_No"
     return [normalize_doc_no(x) in expected for x in df[col]]
 
 
@@ -204,6 +223,12 @@ def inceleme_durumu(meta, sections, kayitlar):
             for gercek, ardisik in zip(gercek_bulgu_maskesi(key, df, meta), df["Ardisik_Numara"]):
                 say[f"mukerrer_{'gercek' if gercek else 'yanlis'}_ardisik_{ardisik}"] += 1
     return dict(say), yanlis
+
+
+def alis_faturalari_df(db, vkn):
+    """Alış mutabakatına giden faturalar (run_full_audit ile aynı: yalnızca alışlar, maliyete eklenen vergilerle)."""
+    inv = checks.maliyet_vergisi_ekle(db.get_invoices_df(), db.get_invoice_taxes_df())
+    return checks.alis_faturalari(inv, vkn)
 
 
 def fiyat_puani(meta, lines, threshold, kurallar):
@@ -309,6 +334,27 @@ def print_totals(all_results):
           f"{i1['mukerrer_gercek_ardisik_Evet'] + i1['mukerrer_gercek_ardisik_Hayır']} ardışık, yanlış alarm "
           f"{i1['mukerrer_yanlis_ardisik_Evet']}/"
           f"{i1['mukerrer_yanlis_ardisik_Evet'] + i1['mukerrer_yanlis_ardisik_Hayır']} ardışık")
+    vo = Counter()
+    for r in all_results:
+        vo.update(r.get("vergi_ozeti") or {})
+    mv = [sum((r.get("maliyet_vergisi") or {}).get(k, 0) for r in all_results) for k in ("fatura", "toplam_tl")]
+    print(f"Vergi mutabakatı (alış): KDV karşılaştırılan={vo['kdv_karsilastirilan']} KDV farkı={vo['kdv_farki']} "
+          f"KDV'si kaydedilmemiş={vo['kdv_yok']} | tevkifatlı={vo['tevkifatli']} tevkifat bulgusu={vo['tevkifat_bulgu']}"
+          f" | maliyete eklenen vergili fatura={mv[0]} (toplam {mv[1]:,.0f} TL)")
+    so, se, sf, sk = Counter(), Counter(), Counter(), Counter()
+    n_satis_firma = 0
+    for r in all_results:
+        if r.get("satis_ozeti"):
+            n_satis_firma += 1
+            so["fatura"] += r["satis_ozeti"]["fatura"]
+            so["kur_tolerans_ici"] += r["satis_ozeti"]["kur_tolerans_ici"]
+            se.update(r["satis_ozeti"]["eslesme"])
+            sf.update(r["satis_ozeti"]["faturasiz"])
+            sk.update(r["satis_ozeti"]["kdv"])
+    print(f"Satış mutabakatı: {n_satis_firma} firma, {so['fatura']} satış faturası, eşleştirme={dict(se)} | "
+          f"faturasız gelir listelenen={sf['listelenen']} (borç yönlü elenen={sf['borc_yonlu']}, önek={sf['haric_onek']})"
+          f" | KDV karşılaştırılan={sk['kdv_karsilastirilan']} (istisna/ihracat={sk['istisna']}) fark={sk['kdv_farki']}"
+          f" | kur farkı (tolerans içi)={so['kur_tolerans_ici']}")
     elle = Counter(f for r in all_results for f in r["friction"])
     n_elle = sum(1 for r in all_results if r["friction"])
     print(f"Elle müdahale gereken yevmiye dosyası: {n_elle}/{len(all_results)} {dict(elle)}  "
@@ -336,7 +382,8 @@ def main():
         sc, fp = score(meta, sections)
         log["faturasiz_ozeti"] = {k: v for k, v in counts["faturasiz_ozeti"].items() if k != "onekler"}
         # Önek listesinin katkısı: boş önek listesiyle (yalnızca borç yönü filtresi) aynı kontrol
-        bos = checks.reconcile(db.get_invoices_df(), db.get_journal_df(), accounts, 0.01, "Aylık", haric_onekler=[])
+        alis = alis_faturalari_df(db, firm.vkn)
+        bos = checks.reconcile(alis, db.get_journal_df(), accounts, 0.01, "Aylık", haric_onekler=[])
         log["onek_bos_faturasiz"] = dict(score(meta, {FATURASIZ: bos[FATURASIZ]})[0][FATURASIZ],
                                          yuksek_oncelik=bos.faturasiz_ozeti["yuksek"])
         log["eslesme"] = dict(counts["eslesme"] or {})
@@ -344,7 +391,7 @@ def main():
         # Dövizli faturalarda yüzde kur toleransının etkisi (%0 = madde 6 öncesi davranış)
         log["kur_ozeti"] = counts["kur_ozeti"]
         log["kur"] = {}
-        inv_df, jou_df = db.get_invoices_df(), db.get_journal_df()
+        inv_df, jou_df = alis, db.get_journal_df()
         for pct in KUR_TOLERANSLARI:
             r = checks.reconcile(inv_df, jou_df, accounts, 0.01, "Aylık", kur_toleransi=pct)
             log["kur"][pct] = dict(score(meta, {"Tutar Farkları": r["Tutar Farkları"]})[0]["Tutar Farkları"],
@@ -356,7 +403,7 @@ def main():
             log["tolerans50_tutar"] = sc2["Tutar Farkları"]
         # Fiyat analizi: eşik duyarlılığı varsayılan kurallarla ve boş anahtar kelime listesiyle (yalnızca
         # tevkifat + para birimi + yetersiz veri kuralları); en az alım sayısı duyarlılığı varsayılan kurallarla
-        lines = db.get_lines_df()
+        lines = checks.alis_faturalari(db.get_lines_df(), firm.vkn)
         log["fiyat_ozeti"] = {k: v for k, v in counts["fiyat_ozeti"].items() if k != "kelimeler"}
         log["esik"], log["esik_kelimesiz"], log["min_alim"] = {}, {}, {}
         for th in ESIKLER:
@@ -378,15 +425,28 @@ def main():
         log["score2_bulunan"] = sum(v["bulunan"] for v in sc2.values())
         log["score2_beklenen"] = sum(v["beklenen"] for v in sc2.values())
         incelenen = inceleme.bolumlere_uygula(sections, kayitlar)
+        st = counts["satis"]
         export_sections(os.path.join(WORK, f"{meta['code']}_Denetim_Raporu.xlsx"),
                         dict([("Özet", summary), ("İnceleme Özeti", inceleme.inceleme_ozeti(incelenen)),
                               ("Eşleşme Özeti", checks.eslesme_ozeti_df(counts["eslesme"])),
                               ("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(counts["faturasiz_ozeti"])),
                               ("Fiyat Analizi Özeti", checks.fiyat_ozeti_df(counts["fiyat_ozeti"]))]
+                             + ([("Satış Eşleşme Özeti", checks.eslesme_ozeti_df(st["eslesme"])),
+                                 ("Faturasız Gelir Özeti", checks.faturasiz_ozeti_df(st["faturasiz_ozeti"]))]
+                                if st else [])
                              + list(incelenen.items())
                              + [("Kur Farkı (Tolerans İçi)", counts["kur_farki"]),
                                 ("Faturasız Listeden Hariç Tutulanlar", counts["faturasiz_haric"]),
-                                ("Fiyat Analizi Dışı Satırlar", counts["fiyat_haric"])]))
+                                ("Fiyat Analizi Dışı Satırlar", counts["fiyat_haric"])]
+                             + ([("Satış Kur Farkı (Tolerans İçi)", st["kur_farki"]),
+                                 ("Faturasız Gelir Listesinden Hariç Tutulanlar", st["faturasiz_haric"])] if st else [])))
+        log["vergi_ozeti"] = {k: v for k, v in (counts["vergi_ozeti"] or {}).items() if not isinstance(v, list)}
+        log["satis_ozeti"] = None if st is None else {
+            "fatura": st["fatura"], "eslesme": dict(st["eslesme"]),
+            "faturasiz": {k: v for k, v in st["faturasiz_ozeti"].items() if k not in ("onekler", "isaretli", "yon")},
+            "kdv": {k: v for k, v in st["vergi_ozeti"].items() if not isinstance(v, list)},
+            "kur_tolerans_ici": st["kur_ozeti"]["tolerans_ici"]}
+        log["maliyet_vergisi"] = counts["maliyet_vergisi"]
         log["score"] = sc
         log["fp_causes"] = {k: dict(v) for k, v in fp.items()}
         all_results.append(log)
