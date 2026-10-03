@@ -1,0 +1,71 @@
+name: Windows .exe derle
+
+on:
+  push:
+    branches: [ccr-65a93959-yh6wl0, main, master]
+    paths-ignore: ["sim/**", "**.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Bağımlılıkları kur
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pytest
+
+      - name: Testleri çalıştır
+        run: python -m pytest -q
+
+      - name: .exe derle
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name DenetimSistemi
+          --collect-data customtkinter
+          app.py
+
+      - name: .exe açılıyor mu (duman testi)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\DenetimSistemi.exe -PassThru
+          Start-Sleep -Seconds 25
+          if ($p.HasExited) { Write-Error "Uygulama açılışta kapandı (çıkış kodu $($p.ExitCode))"; exit 1 }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "Uygulama 25 saniye boyunca açık kaldı."
+          if (Test-Path dist\veri\firmalar.db) { Write-Host "veri klasörü .exe'nin yanında oluşturuldu." }
+          else { Write-Error "veri klasörü .exe'nin yanında oluşmadı"; exit 1 }
+
+      - name: Yapıtı yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: DenetimSistemi-windows
+          path: dist/DenetimSistemi.exe
+          retention-days: 30
+
+      - name: Sürüm (release) olarak yayınla
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: son-surum
+          name: Denetim Sistemi – son sürüm
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          body: |
+            Windows için tek dosyalık uygulama: **DenetimSistemi.exe**
+            Derlenen commit: ${{ github.sha }} (${{ github.ref_name }})
+
+            - Kurulum gerekmez; .exe'yi bir klasöre koyup çift tıklayın (ilk açılış 10-20 saniye sürebilir).
+            - Veriler .exe'nin yanındaki `veri` klasöründe tutulur; yedeklemek için bu klasörü kopyalayın.
+            - Windows "Bilinmeyen yayıncı" uyarısı verirse: "Ek bilgi" → "Yine de çalıştır".
+          files: dist/DenetimSistemi.exe

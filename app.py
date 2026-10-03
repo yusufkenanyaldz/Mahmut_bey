@@ -1,5 +1,6 @@
 import functools
 import os
+import sys
 from collections import OrderedDict
 
 import customtkinter as ctk
@@ -11,8 +12,32 @@ from denetim.export import export_sections  # noqa: F401  (eski içe aktarımlar
 from denetim.firms import FirmError, FirmRegistry
 from denetim.utils import parse_account_list, parse_number
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(APP_DIR, "veri")
+def _app_dir():
+    """Uygulama klasörü. PyInstaller ile paketlenmiş .exe'de __file__ her açılışta silinen geçici bir
+    klasörü gösterir; bu yüzden .exe'nin bulunduğu klasör kullanılır."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _data_dir(app_dir):
+    """Veriler uygulamanın yanındaki `veri/` klasöründe tutulur. Klasör yazılabilir değilse (ör. .exe
+    Program Files altındaysa) kullanıcının yerel uygulama verisi klasörüne geçilir."""
+    preferred = os.path.join(app_dir, "veri")
+    try:
+        os.makedirs(preferred, exist_ok=True)
+        probe = os.path.join(preferred, ".yazma_testi")
+        with open(probe, "w", encoding="utf-8") as fh:
+            fh.write("")
+        os.remove(probe)
+        return preferred
+    except OSError:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "DenetimSistemi", "veri")
+
+
+APP_DIR = _app_dir()
+DATA_DIR = _data_dir(APP_DIR)
 APP_TITLE = "Finansal Denetim ve Analiz Sistemi | SMMM Modülü"
 SECTORS = ["İnşaat", "Halı Üretimi", "Uluslararası Taşımacılık", "Otomotiv Satış ve Kiralama", "Muhtelif İmalat"]
 PERIOD_TYPES = ["Aylık", "Çeyreklik", "Yıllık"]
