@@ -31,7 +31,14 @@ INVOICE_SCHEMA = {
     "Para_Birimi": ["Doviz", "Döviz", "Para Birimi", "Döviz Cinsi", "Döviz Türü"],
     "Kur": ["Doviz_Kuru", "Döviz Kuru", "Kuru"],
     "OTV_Tutari": ["ÖTV", "OTV", "ÖTV Tutarı", "ÖTV TL", "Özel Tüketim Vergisi"],
+    "Fatura_Tipi": ["Fatura Tipi", "Fatura Türü", "Fatura Turu"],
+    "Tevkifat_Orani": ["Tevkifat Oranı", "Tevkifat", "KDV Tevkifat Oranı", "Tevkifat %"],
 }
+# Excel Fatura_Tipi değerleri → (InvoiceTypeCode, ProfileID). IHRACAT bir tip değil senaryodur: istisna faturası.
+FATURA_TIPLERI = {"SATIS": ("SATIS", None), "IADE": ("IADE", None), "TEVKIFAT": ("TEVKIFAT", None),
+                  "TEVKIFATIADE": ("TEVKIFATIADE", None), "ISTISNA": ("ISTISNA", None),
+                  "IHRACKAYITLI": ("IHRACKAYITLI", None), "OZELMATRAH": ("OZELMATRAH", None),
+                  "IHRACAT": ("ISTISNA", "IHRACAT")}
 # Excel'deki ÖTV_Tutari bu vergi türü koduyla saklanır (faturada ayrıca gösterilen ÖTV çoğunlukla motorlu taşıt ÖTV'sidir)
 EXCEL_OTV_KODU = "9077"
 INVOICE_REQUIRED = ["Fatura_No", "Tarih", "Tedarikci_VKN", "Tedarikci_Ad", "Urun_Adi", "Miktar", "Fiyat"]
@@ -60,6 +67,7 @@ FIELD_LABELS = {
     "Tedarikci_VKN": "Tedarikçi VKN/TCKN", "Tedarikci_Ad": "Tedarikçi Adı", "Urun_Adi": "Ürün Adı",
     "Miktar": "Miktar", "Birim": "Birim", "Fiyat": "Birim Fiyat (KDV hariç)", "Iskonto": "İskonto",
     "KDV_Orani": "KDV Oranı", "Para_Birimi": "Para Birimi", "Kur": "Kur", "OTV_Tutari": "ÖTV Tutarı",
+    "Fatura_Tipi": "Fatura Tipi", "Tevkifat_Orani": "Tevkifat Oranı",
 }
 # Eşleme türleri: (şema, zorunlu alanlar). Kayıtlı eşlemeler bu anahtarlarla saklanır.
 KIND_YEVMIYE, KIND_FATURA = "YEVMIYE", "FATURA"
@@ -358,6 +366,36 @@ def parse_saved_mappings(items):
 
 
 # ---------------------------------------------------------------------- fatura excel
+def parse_tevkifat_orani(value):
+    """Tevkifat oranını yüzdeye çevirir: '4/10' → 40, '%50' → 50, '0,7' → 70, 90 → 90. Boşsa None.
+
+    Geçersizse ValueError.
+    """
+    if _is_blank(value):
+        return None
+    text = str(value).strip().replace("%", "").replace(" ", "")
+    if "/" in text:
+        pay, payda = text.split("/", 1)
+        oran = parse_number(pay) / parse_number(payda) * 100
+    else:
+        oran = parse_number(text)
+        if 0 < oran <= 1:
+            oran *= 100
+    if not 0 <= oran <= 100:
+        raise ValueError(f"tevkifat oranı 0–100 arasında olmalı ({value})")
+    return round(oran, 4)
+
+
+def parse_fatura_tipi(value):
+    """Excel Fatura_Tipi değeri → (InvoiceTypeCode, ProfileID). Boşsa (None, None); bilinmiyorsa ValueError."""
+    if _is_blank(value):
+        return None, None
+    anahtar = column_key(value).upper()
+    if anahtar not in FATURA_TIPLERI:
+        raise ValueError(f"bilinmeyen fatura tipi ({value}); geçerli: {', '.join(FATURA_TIPLERI)}")
+    return FATURA_TIPLERI[anahtar]
+
+
 def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None):
     """Fatura Excel'ini okur. Aynı Fatura_No + VKN'ye sahip satırlar tek faturanın kalemleri sayılır.
 
@@ -411,6 +449,18 @@ def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None
         vat_rate = num("KDV_Orani", None, required=False)
         rate = num("Kur", 1.0, required=False)
         otv = num("OTV_Tutari", 0.0, required=False) or 0.0
+        try:
+            tevkifat_orani = parse_tevkifat_orani(row.get("Tevkifat_Orani")) if "Tevkifat_Orani" in found else None
+        except ValueError as e:
+            row_errors.append(f"Tevkifat_Orani: {e}")
+            tevkifat_orani = None
+        try:
+            fatura_tipi, profil = parse_fatura_tipi(row.get("Fatura_Tipi")) if "Fatura_Tipi" in found else (None, None)
+        except ValueError as e:  # Bilinmeyen tip faturayı düşürmez: SATIS kabul edilir
+            result.warnings.append(f"Satır {_excel_row(idx)}: Fatura_Tipi: {e}; SATIS kabul edildi")
+            fatura_tipi, profil = None, None
+        if not fatura_tipi:
+            fatura_tipi = "TEVKIFAT" if tevkifat_orani else "SATIS"
         if otv < 0:
             row_errors.append(f"OTV_Tutari negatif olamaz ({otv})")
         if qty is not None and qty <= 0 and "Miktar boş" not in row_errors:
@@ -444,13 +494,15 @@ def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None
             # ÖTV KDV matrahına dahildir
             "vat_amount": (line_net + otv) * vat_rate / 100 if vat_rate is not None else None,
             "otv": otv,
+            "tevkifat_orani": tevkifat_orani,
         }
         header = {
             "invoice_no": invoice_no,
             "issue_date": issue_date,
             "supplier_vkn": vkn,
             "supplier_name": str(row["Tedarikci_Ad"]).strip() if not _is_blank(row["Tedarikci_Ad"]) else "",
-            "invoice_type": "SATIS",
+            "invoice_type": fatura_tipi,
+            "profile": profil,
             "currency": currency,
             "exchange_rate": rate or 1.0,
             "source": "EXCEL",
@@ -460,7 +512,7 @@ def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None
             grp["header"] = header
         else:
             first = grp["header"]
-            for fld, label in (("issue_date", "Tarih"), ("currency", "Para_Birimi")):
+            for fld, label in (("issue_date", "Tarih"), ("currency", "Para_Birimi"), ("invoice_type", "Fatura_Tipi")):
                 if first[fld] != header[fld]:
                     grp["bad"] = True
                     result.errors.append(
@@ -480,17 +532,21 @@ def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None
         net = sum(ln["line_net"] for ln in grp["lines"])
         vat_values = [ln["vat_amount"] for ln in grp["lines"] if ln["vat_amount"] is not None]
         otv = round(sum(ln.pop("otv") for ln in grp["lines"]), 2)
+        oranlar = [ln.pop("tevkifat_orani") for ln in grp["lines"]]
+        tevkifat = round(sum((ln["vat_amount"] or 0.0) * o / 100 for ln, o in zip(grp["lines"], oranlar) if o), 2)
         taxes = [{"code": EXCEL_OTV_KODU, "name": "ÖTV (Excel)", "amount": otv, "percent": None,
                   "taxable": round(net, 2)}] if otv else []
         header.update({
             "taxes": taxes,
             "other_tax_amount": otv,
+            "withholding_amount": tevkifat,
+            "withholding_rate": next((o for o in oranlar if o), None),
             "tax_detail": 1,
             "line_extension_amount": net,
             "allowance_total": 0.0,
             "total_amount": net,
             "vat_amount": sum(vat_values) if vat_values else 0.0,
-            "payable_amount": net + otv + sum(vat_values) if vat_values else None,
+            "payable_amount": net + otv + sum(vat_values) - tevkifat if vat_values else None,
         })
         result.items.append((header, grp["lines"]))
     return result

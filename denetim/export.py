@@ -9,7 +9,7 @@ def export_sections(file_path, sections):
     used = set()
     with pd.ExcelWriter(file_path) as writer:
         for title, df in sections.items():
-            name = re.sub(r"[\[\]:*?/\\]", "", title)[:31] or "Sayfa"
+            name = re.sub(r"[\[\]:*?]", "", re.sub(r"[/\\]", "-", title))[:31] or "Sayfa"
             base, n = name, 2
             while name in used:
                 suffix = f" {n}"

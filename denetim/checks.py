@@ -7,7 +7,7 @@ from datetime import date
 
 import pandas as pd
 
-from .utils import normalize_uom, normalize_vkn, period_of, tr_ascii_upper
+from .utils import normalize_uom, normalize_vkn, parse_account_list, period_of, tr_ascii_upper
 
 TOLERANCE_DEFAULT = 0.01
 # Dövizli (TRY dışı) faturalarda muhasebe fatura kuru yerine başka günün kurunu kullanabilir; TL tutarın bu
@@ -40,14 +40,20 @@ class VergiAyarlari:
     """Vergi mutabakatı ayarları (firma başına saklanır).
 
     maliyet_kodlari: maliyete eklenen vergi türü kodları (parse_vergi_kodlari çıktısı; None → varsayılan)
+    kdv_hesaplari: indirilecek KDV hesapları (parse_account_list çıktısı; None → 191, [] → KDV kontrolü kapalı)
+    tevkifat_hesaplari: tevkif edilen KDV hesapları (None → 360, [] → kapalı)
     """
 
-    def __init__(self, maliyet_kodlari=None):
-        self.maliyet_kodlari = parse_vergi_kodlari(VARSAYILAN_MALIYET_VERGI_KODLARI) if maliyet_kodlari is None \
-            else list(maliyet_kodlari)
+    def __init__(self, maliyet_kodlari=None, kdv_hesaplari=None, tevkifat_hesaplari=None):
+        def varsayilan(deger, metin, cevir):
+            return cevir(metin) if deger is None else list(deger)
+        self.maliyet_kodlari = varsayilan(maliyet_kodlari, VARSAYILAN_MALIYET_VERGI_KODLARI, parse_vergi_kodlari)
+        self.kdv_hesaplari = varsayilan(kdv_hesaplari, VARSAYILAN_KDV_HESAPLARI, parse_account_list)
+        self.tevkifat_hesaplari = varsayilan(tevkifat_hesaplari, VARSAYILAN_TEVKIFAT_HESAPLARI, parse_account_list)
 
     def __repr__(self):
-        return f"VergiAyarlari(maliyet_kodlari={self.maliyet_kodlari})"
+        return (f"VergiAyarlari(maliyet_kodlari={self.maliyet_kodlari}, kdv_hesaplari={self.kdv_hesaplari}, "
+                f"tevkifat_hesaplari={self.tevkifat_hesaplari})")
 
 
 def maliyet_vergisi_ozeti(invoices):
@@ -491,6 +497,7 @@ class MutabakatSonucu(OrderedDict):
         self.faturasiz_haric = pd.DataFrame(columns=HARIC_COLS)
         self.kur_ozeti = {}
         self.kur_farki = pd.DataFrame(columns=KUR_FARKI_COLS)
+        self.vergi_ozeti = {}
 
 
 _OZET_ACIKLAMA = OrderedDict([
@@ -725,9 +732,144 @@ def kur_ozeti_metni(ozet):
             f"(dövizli eşleşen fatura: {ozet['dovizli_fatura']})")
 
 
+# ---------------------------------------------------------------------- KDV ve tevkifat mutabakatı
+KDV_FARKI_COLS = ["Fatura_No", "Fatura_Tarihi", "Tedarikci", "Tedarikci_VKN", "KDV_Tutari_TL", "Tevkifat_Tutari_TL",
+                  "Yevmiye_KDV_TL", "Fark_TL", "Olasi_Neden", "Dovizli", "Para_Birimi", "Kur", "Yevmiye_Belge_No",
+                  "Eslesme_Yontemi"]
+KDV_YOK_COLS = ["Fatura_No", "Fatura_Tarihi", "Tedarikci", "Tedarikci_VKN", "KDV_Tutari_TL", "Olasi_Neden",
+                "Kullanilan_Hesaplar", "Yevmiye_Belge_No", "Eslesme_Yontemi"]
+TEVKIFAT_COLS = ["Fatura_No", "Fatura_Tarihi", "Tedarikci", "Tedarikci_VKN", "KDV_Tutari_TL", "Tevkifat_Orani",
+                 "Tevkifat_Tutari_TL", "Yevmiye_Tevkifat_TL", "Fark_TL", "Durum", "Yevmiye_Belge_No",
+                 "Eslesme_Yontemi"]
+NEDEN_KDV_YOK = "KDV hesabında kayıt yok"
+NEDEN_KDV_FATURADA_YOK = "Faturada KDV yok"
+NEDEN_KDV_TEVKIFAT_DUSULMUS = "191'e tevkifat düşülmüş KDV yazılmış (tam KDV yazılmalı)"
+NEDEN_TERS_YON = "Ters yönde kayıt"
+TEVKIFAT_YOK = "Tevkifat kaydı yok"
+TEVKIFAT_TERS = "Borç yönlü (ters) kayıt"
+TEVKIFAT_FARKLI = "Tutar farklı"
+VARSAYILAN_KDV_HESAPLARI = "191"
+VARSAYILAN_TEVKIFAT_HESAPLARI = "360"
+
+
+def _hesap_maskesi(jou, hesaplar):
+    return jou["account_norm"].map(lambda a: any(a.startswith(p) for p in hesaplar)).astype(bool)
+
+
+def _belge_toplamlari(jou, hesaplar):
+    """Hesap önekleriyle eşleşen yevmiye satırlarının belge bazında toplamı ve satır sayısı."""
+    if not hesaplar or jou.empty:
+        return {}
+    g = jou[_hesap_maskesi(jou, hesaplar)].groupby("document_no_norm")["amount"].agg(["sum", "count"])
+    return {d: (float(r["sum"]), int(r["count"])) for d, r in g.iterrows()}
+
+
+def _topla(toplamlar, belgeler):
+    tutar = sum(toplamlar.get(d, (0.0, 0))[0] for d in belgeler)
+    adet = sum(toplamlar.get(d, (0.0, 0))[1] for d in belgeler)
+    return round(tutar, 2), adet
+
+
+def alis_vergi_bulgulari(inv, belgeler, yontemler, jou, kdv_hesaplari, tevkifat_hesaplari,
+                         tolerance=TOLERANCE_DEFAULT, kur_toleransi=KUR_TOLERANSI_VARSAYILAN, isaretli=True,
+                         maliyet_farki=None):
+    """Alış faturalarının KDV'sini (191) ve tevkifatını (360) yevmiyedeki aynı belgeyle karşılaştırır.
+
+    inv: reconcile() içindeki fatura tablosu (kdv_tl, tevkifat_tl, Para_Birimi, Kur, invoice_type ...)
+    belgeler: {fatura index: [document_no_norm, ...]} (madde 2 eşleştirmesinin bulduğu belgeler)
+    maliyet_farki: {fatura index: seçili hesaplardaki tutar farkı} (KDV maliyete eklenmiş tespiti için)
+    Tevkifatlı faturada 191'e TAM KDV yazılır (indirilecek KDV); tevkif edilen kısım 360'a ALACAK yazılır.
+    İade faturalarında yönler terstir. Dönüş: (KDV farkları, KDV'si kaydedilmemiş, tevkifat bulguları, özet)
+    """
+    kdv_top = _belge_toplamlari(jou, kdv_hesaplari)
+    tev_top = _belge_toplamlari(jou, tevkifat_hesaplari)
+    belge_adi = jou.groupby("document_no_norm")["document_no"].first().to_dict() if not jou.empty else {}
+    hesap_adi = jou.groupby("document_no_norm")["account_code"].agg(lambda s: sorted(set(map(str, s)))).to_dict() \
+        if not jou.empty else {}
+    maliyet_farki = maliyet_farki or {}
+    fark_rows, yok_rows, tev_rows = [], [], []
+    ozet = {"kdv_karsilastirilan": 0, "kdv_farki": 0, "kdv_yok": 0, "tevkifatli": 0, "tevkifat_bulgu": 0,
+            "kdv_hesaplari": list(kdv_hesaplari or []), "tevkifat_hesaplari": list(tevkifat_hesaplari or [])}
+    for idx, docs in belgeler.items():
+        r = inv.loc[idx]
+        dovizli = r["Para_Birimi"] != "TRY"
+        isaret = -1 if iade_faturasi(r.get("invoice_type")) else 1  # 191 borç yönlü (iadede alacak)
+        temel = {"Fatura_No": r["invoice_no"], "Fatura_Tarihi": r["issue_date"], "Tedarikci": r["supplier_name"],
+                 "Tedarikci_VKN": r["supplier_vkn"], "KDV_Tutari_TL": r["kdv_tl"],
+                 "Yevmiye_Belge_No": ", ".join(str(belge_adi.get(d, d)) for d in docs),
+                 "Eslesme_Yontemi": yontemler.get(idx, "")}
+        kdv, tev = float(r["kdv_tl"]), float(r["tevkifat_tl"])
+        if kdv_hesaplari:
+            ozet["kdv_karsilastirilan"] += 1
+            tutar, adet = _topla(kdv_top, docs)
+            sinir = izin_verilen_fark(kdv, dovizli, tolerance, kur_toleransi)
+            if adet == 0:
+                if kdv > sinir:
+                    mf = maliyet_farki.get(idx)
+                    neden = NEDEN_KDV_MALIYETTE if mf is not None and _yakin(mf, kdv, sinir) else NEDEN_KDV_YOK
+                    yok_rows.append(dict(temel, Olasi_Neden=neden, Kullanilan_Hesaplar=", ".join(
+                        sorted(set().union(*(hesap_adi.get(d, []) for d in docs))))))
+            else:
+                fark = round(abs(tutar) - kdv, 2)
+                ters = isaretli and kdv > sinir and tutar * isaret < 0
+                if abs(fark) > sinir or ters:
+                    if ters:
+                        neden = NEDEN_TERS_YON
+                    elif kdv <= tolerance:
+                        neden = NEDEN_KDV_FATURADA_YOK
+                    elif _yakin(abs(tutar), 2 * kdv, 2 * sinir):
+                        neden = NEDEN_CIFT_KAYIT
+                    elif tev > sinir and _yakin(abs(tutar), kdv - tev, sinir):
+                        neden = NEDEN_KDV_TEVKIFAT_DUSULMUS
+                    else:
+                        neden = ""
+                    fark_rows.append(dict(temel, Tevkifat_Tutari_TL=tev, Yevmiye_KDV_TL=tutar, Fark_TL=fark,
+                                          Olasi_Neden=neden, Dovizli="Evet" if dovizli else "Hayır",
+                                          Para_Birimi=r["Para_Birimi"], Kur=r["Kur"]))
+        if tevkifat_hesaplari and tev > tolerance:
+            ozet["tevkifatli"] += 1
+            tutar, adet = _topla(tev_top, docs)
+            sinir = izin_verilen_fark(tev, dovizli, tolerance, kur_toleransi)
+            beklenen = -isaret * tev  # 360 alacak yönlü (iadede borç)
+            if adet == 0:
+                durum, fark = TEVKIFAT_YOK, round(-tev, 2)
+            else:
+                fark = round(abs(tutar) - tev, 2)
+                if isaretli and tutar * beklenen < 0:
+                    durum = TEVKIFAT_TERS
+                elif abs(fark) > sinir:
+                    durum = TEVKIFAT_FARKLI
+                else:
+                    continue
+            oran = r.get("withholding_rate")
+            tev_rows.append(dict(temel, Tevkifat_Orani=None if oran is None or pd.isna(oran) else float(oran),
+                                 Tevkifat_Tutari_TL=tev, Yevmiye_Tevkifat_TL=tutar, Fark_TL=fark, Durum=durum))
+    ozet.update(kdv_farki=len(fark_rows), kdv_yok=len(yok_rows), tevkifat_bulgu=len(tev_rows))
+    return (pd.DataFrame(fark_rows, columns=KDV_FARKI_COLS), pd.DataFrame(yok_rows, columns=KDV_YOK_COLS),
+            pd.DataFrame(tev_rows, columns=TEVKIFAT_COLS), ozet)
+
+
+def vergi_ozeti_metni(ozet):
+    """KDV / tevkifat mutabakatı özetini tek satırlık metne çevirir."""
+    if not ozet:
+        return ""
+    parcalar = []
+    if ozet["kdv_hesaplari"]:
+        parcalar.append(f"KDV ({', '.join(ozet['kdv_hesaplari'])}): {ozet['kdv_karsilastirilan']} fatura "
+                        f"karşılaştırıldı, KDV farkı {ozet['kdv_farki']}, KDV'si kaydedilmemiş {ozet['kdv_yok']}")
+    else:
+        parcalar.append("KDV kontrolü kapalı (hesap kodu yok)")
+    if ozet["tevkifat_hesaplari"]:
+        parcalar.append(f"Tevkifat ({', '.join(ozet['tevkifat_hesaplari'])}): {ozet['tevkifatli']} tevkifatlı fatura, "
+                        f"eksik/farklı {ozet['tevkifat_bulgu']}")
+    else:
+        parcalar.append("Tevkifat kontrolü kapalı (hesap kodu yok)")
+    return "Vergi mutabakatı — " + " | ".join(parcalar)
+
+
 # ---------------------------------------------------------------------- mutabakat
 def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_type="Aylık", haric_onekler=None,
-              kur_toleransi=KUR_TOLERANSI_VARSAYILAN):
+              kur_toleransi=KUR_TOLERANSI_VARSAYILAN, kdv_hesaplari=None, tevkifat_hesaplari=None):
     """Faturaları (KDV hariç, TL) seçili hesap kodlarındaki yevmiye kayıtlarıyla karşılaştırır.
 
     accounts: normalize edilmiş hesap kodu önekleri listesi (ör. ['153', '770']).
@@ -741,6 +883,9 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
     Tutar farkı: TL faturada fark > tolerance (TL); dövizli faturada fark > max(tolerance, kur_toleransi % × TL tutar).
     Dövizli faturalarda bu yüzde içinde kalan farklar tutar farkı sayılmaz, .kur_farki / .kur_ozeti'de bilgi olarak
     raporlanır (kur_toleransi=0 → yüzde tolerans yok).
+    kdv_hesaplari / tevkifat_hesaplari verilirse (ör. ['191'] / ['360']) aynı eşleştirmeyle bulunan belgelerde KDV ve
+    tevkifat kayıtları da karşılaştırılır (bkz. alis_vergi_bulgulari): "KDV Farkları", "KDV'si Kaydedilmemiş
+    Faturalar", "Tevkifat Kaydı Eksik/Farklı" bölümleri ve .vergi_ozeti.
     Dönüş: MutabakatSonucu (OrderedDict başlık → DataFrame, .eslesme_ozeti, .faturasiz_ozeti, .faturasiz_haric)
     """
     res = MutabakatSonucu()
@@ -763,6 +908,10 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
     if "vat_amount" not in inv:
         inv["vat_amount"] = 0.0
     inv["kdv_tl"] = (pd.to_numeric(inv["vat_amount"], errors="coerce").fillna(0.0) * inv["Kur"]).round(2)
+    wh = inv["withholding_amount"] if "withholding_amount" in inv else pd.Series(0.0, index=inv.index)
+    inv["tevkifat_tl"] = (pd.to_numeric(wh, errors="coerce").fillna(0.0) * inv["Kur"]).round(2)
+    if "invoice_type" not in inv:
+        inv["invoice_type"] = "SATIS"
 
     jou = journal.copy()
     if jou.empty:
@@ -893,6 +1042,22 @@ def reconcile(invoices, journal, accounts, tolerance=TOLERANCE_DEFAULT, period_t
     res["Belirsiz Eşleşme (Birden Fazla Seri+Sıra Adayı)"] = multi.rename(columns=base_cols)[
         list(base_cols.values()) + ["Aday_Belgeler"]].reset_index(drop=True)
 
+    if kdv_hesaplari or tevkifat_hesaplari:
+        belgeler = {i: [d] for i, (d, _) in eslesme.items()}
+        belgeler.update({i: list(d) for i, (d, _) in diger.items()})
+        yontem = {i: y for i, (_, y) in eslesme.items()}
+        yontem.update({i: y for i, (_, y) in diger.items()})
+        mf = {i: float(abs(sel_docs.at[d, "Yevmiye_Tutari"]) - abs(clear.at[i, "beklenen_tl"]))
+              for i, (d, _) in eslesme.items()}
+        kdv_fark, kdv_yok, tev, res.vergi_ozeti = alis_vergi_bulgulari(
+            clear, belgeler, yontem, jou, kdv_hesaplari, tevkifat_hesaplari, tolerance, kur_toleransi,
+            yevmiye_isaretli(jou), mf)
+        if kdv_hesaplari:
+            res["KDV Farkları"] = kdv_fark
+            res["KDV'si Kaydedilmemiş Faturalar"] = kdv_yok
+        if tevkifat_hesaplari:
+            res["Tevkifat Kaydı Eksik/Farklı"] = tev
+
     yontemler = Counter(y for _, y in eslesme.values())
     res.eslesme_ozeti = OrderedDict([
         (YONTEM_TAM, yontemler[YONTEM_TAM]), (YONTEM_SERI_SIRA, yontemler[YONTEM_SERI_SIRA]),
@@ -1007,7 +1172,7 @@ def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn,
     journal = db.get_journal_df()
     sections = OrderedDict()
     notes = []
-    eslesme = faturasiz_ozeti = faturasiz_haric = kur_ozeti = kur_farki = None
+    eslesme = faturasiz_ozeti = faturasiz_haric = kur_ozeti = kur_farki = vergi_ozeti = None
 
     if not invoices.empty and "tax_detail" in invoices:
         eski = int(((invoices["source"] == "XML") & invoices["tax_detail"].isna()).sum())
@@ -1019,7 +1184,9 @@ def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn,
     sections[f"Fiyat Anomalileri (±%{threshold:g})"] = fiyat.riskli
 
     if accounts and not journal.empty:
-        recon = reconcile(invoices, journal, accounts, tolerance, period_type, haric_onekler, kur_toleransi)
+        recon = reconcile(invoices, journal, accounts, tolerance, period_type, haric_onekler, kur_toleransi,
+                          vergi.kdv_hesaplari, vergi.tevkifat_hesaplari)
+        vergi_ozeti = recon.vergi_ozeti
         sections.update(recon)
         eslesme = recon.eslesme_ozeti
         faturasiz_ozeti, faturasiz_haric = recon.faturasiz_ozeti, recon.faturasiz_haric
@@ -1045,4 +1212,4 @@ def run_full_audit(db, period_type, threshold, accounts, tolerance, company_vkn,
                                       "faturasiz_ozeti": faturasiz_ozeti, "faturasiz_haric": faturasiz_haric,
                                       "kur_ozeti": kur_ozeti, "kur_farki": kur_farki,
                                       "fiyat_ozeti": fiyat.ozet, "fiyat_haric": fiyat.haric,
-                                      "maliyet_vergisi": maliyet_vergisi_ozeti(invoices)}
+                                      "maliyet_vergisi": maliyet_vergisi_ozeti(invoices), "vergi_ozeti": vergi_ozeti}

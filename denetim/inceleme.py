@@ -47,6 +47,9 @@ KONTROLLER = [
     ("Olası Mükerrer Faturalar", "MUKERRER", (_VKN, _NOLAR)),
     ("Fatura Hesaplama Tutarsızlıkları", "HESAPLAMA", (_VKN, _NO, _KONTROL)),
     ("Alıcısı Firma Olmayan Faturalar", "ALICI", (_VKN, _NO)),
+    ("KDV Farkları", "KDV_FARKI", (_VKN, _NO)),
+    ("KDV'si Kaydedilmemiş Faturalar", "KDV_KAYITSIZ", (_VKN, _NO)),
+    ("Tevkifat Kaydı Eksik", "TEVKIFAT", (_VKN, _NO)),
 ]
 
 

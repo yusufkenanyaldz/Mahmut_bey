@@ -189,3 +189,115 @@ def test_eski_xml_faturalar_icin_not(tmp_path):
     db = DatabaseManager(path)
     _, _, notes, _ = checks.run_full_audit(db, "Aylık", 15, [], 0.01, FIRMA_VKN)
     assert any("önceki bir sürümle" in n for n in notes)
+
+
+# ------------------------------------------------------------------ 7.3 tevkifat ayrıştırma
+@pytest.mark.parametrize("satir", [False, True])
+def test_tevkifat_ayristirma(satir):
+    h, _, _ = parse_ubl(ubl(tip="TEVKIFAT", net=10_000, tevkifat=800, tevkifat_orani=40, satir_tevkifat=satir))
+    assert h["withholding_amount"] == 800 and h["withholding_rate"] == 40 and h["withholding_code"] == "624"
+    assert h["vat_amount"] == 2000 and h["payable_amount"] == 11_200
+
+
+@pytest.mark.parametrize("raw,expected", [("4/10", 40), ("%50", 50), ("0,7", 70), (90, 90), ("9/10", 90)])
+def test_tevkifat_orani_excel(raw, expected):
+    assert importers.parse_tevkifat_orani(raw) == pytest.approx(expected)
+
+
+def test_excel_tevkifat_ve_fatura_tipi():
+    df = pd.DataFrame([
+        {"Fatura_No": "T1", "Tarih": "10.07.2024", "Tedarikci_VKN": TEDARIKCI_VKN, "Tedarikci_Ad": "Taşeron",
+         "Urun_Adi": "Hakediş", "Miktar": 1, "Fiyat": 10_000, "KDV_Orani": 20, "Tevkifat Oranı": "4/10"},
+        {"Fatura_No": "T2", "Tarih": "10.07.2024", "Tedarikci_VKN": TEDARIKCI_VKN, "Tedarikci_Ad": "X",
+         "Urun_Adi": "Mal", "Miktar": 1, "Fiyat": 100, "KDV_Orani": 20, "Fatura Tipi": "İade"},
+        {"Fatura_No": "T3", "Tarih": "10.07.2024", "Tedarikci_VKN": TEDARIKCI_VKN, "Tedarikci_Ad": "X",
+         "Urun_Adi": "Mal", "Miktar": 1, "Fiyat": 100, "KDV_Orani": 20, "Fatura Tipi": "Bilinmeyen"}])
+    res = importers.read_invoice_excel(xlsx(df))
+    h = {x["invoice_no"]: x for x, _ in res.items}
+    assert h["T1"]["invoice_type"] == "TEVKIFAT" and h["T1"]["withholding_amount"] == 800
+    assert h["T1"]["withholding_rate"] == 40 and h["T1"]["payable_amount"] == pytest.approx(11_200)
+    assert h["T2"]["invoice_type"] == "IADE" and h["T2"]["withholding_amount"] == 0
+    assert h["T3"]["invoice_type"] == "SATIS" and any("Fatura_Tipi" in w for w in res.warnings)
+
+
+# ------------------------------------------------------------------ 7.2 KDV / 7.3 tevkifat mutabakatı
+def _alis_senaryosu(db):
+    x = [ubl("AAA2024000000001", net=1000),                       # doğru
+         ubl("AAA2024000000002", net=1000),                       # KDV yanlış tutar (191 = 100)
+         ubl("AAA2024000000003", net=1000),                       # KDV maliyete eklenmiş
+         ubl("AAA2024000000004", net=1000),                       # KDV hiç kaydedilmemiş
+         ubl("AAA2024000000005", tip="TEVKIFAT", net=10_000, tevkifat=800, tevkifat_orani=40),  # doğru
+         ubl("AAA2024000000006", tip="TEVKIFAT", net=10_000, tevkifat=800, tevkifat_orani=40),  # 360 yok
+         ubl("AAA2024000000007", tip="TEVKIFAT", net=10_000, tevkifat=800, tevkifat_orani=40),  # 191'e net KDV
+         ubl("AAA2024000000008", tip="TEVKIFAT", net=10_000, tevkifat=800, tevkifat_orani=40),  # 360 borç
+         ubl("AAA2024000000009", net=1000),                       # yanlış hesap (770) ama 191 doğru
+         ubl("AAA2024000000010", net=1000)]                       # muhasebeleşmemiş: KDV kontrolüne girmez
+    j = [yev("AAA2024000000001", "153.01", 1000), yev("AAA2024000000001", "191.01", 200),
+         yev("AAA2024000000001", "320.01", alacak=1200),
+         yev("AAA2024000000002", "153.01", 1000), yev("AAA2024000000002", "191.01", 100),
+         yev("AAA2024000000002", "320.01", alacak=1100),
+         yev("AAA2024000000003", "153.01", 1200), yev("AAA2024000000003", "320.01", alacak=1200),
+         yev("AAA2024000000004", "153.01", 1000), yev("AAA2024000000004", "320.01", alacak=1000),
+         yev("AAA2024000000005", "153.01", 10_000), yev("AAA2024000000005", "191.01", 2000),
+         yev("AAA2024000000005", "360.02", alacak=800), yev("AAA2024000000005", "320.01", alacak=11_200),
+         yev("AAA2024000000006", "153.01", 10_000), yev("AAA2024000000006", "191.01", 2000),
+         yev("AAA2024000000006", "320.01", alacak=12_000),
+         yev("AAA2024000000007", "153.01", 10_000), yev("AAA2024000000007", "191.01", 1200),
+         yev("AAA2024000000007", "360.02", alacak=800), yev("AAA2024000000007", "320.01", alacak=10_400),
+         yev("AAA2024000000008", "153.01", 10_000), yev("AAA2024000000008", "191.01", 2000),
+         yev("AAA2024000000008", "360.02", 800), yev("AAA2024000000008", "320.01", alacak=12_800),
+         yev("AAA2024000000009", "770.01", 1000), yev("AAA2024000000009", "191.01", 200),
+         yev("AAA2024000000009", "320.01", alacak=1200)]
+    yukle(db, x, j)
+    return checks.reconcile(db.get_invoices_df(), db.get_journal_df(), ["153"], kdv_hesaplari=["191"],
+                            tevkifat_hesaplari=["360"])
+
+
+def test_kdv_mutabakati(db):
+    res = _alis_senaryosu(db)
+    fark = res["KDV Farkları"].set_index("Fatura_No")
+    assert sorted(fark.index) == ["AAA2024000000002", "AAA2024000000007"]
+    assert fark.loc["AAA2024000000002", "Fark_TL"] == -100
+    assert fark.loc["AAA2024000000007", "Olasi_Neden"] == checks.NEDEN_KDV_TEVKIFAT_DUSULMUS
+    yok = res["KDV'si Kaydedilmemiş Faturalar"].set_index("Fatura_No")
+    assert sorted(yok.index) == ["AAA2024000000003", "AAA2024000000004"]
+    assert yok.loc["AAA2024000000003", "Olasi_Neden"] == checks.NEDEN_KDV_MALIYETTE
+    assert yok.loc["AAA2024000000004", "Olasi_Neden"] == checks.NEDEN_KDV_YOK
+    # Tevkifatlı faturalarda 191'e tam KDV yazılması doğrudur (AAA...05 bulgu değil)
+    assert "AAA2024000000005" not in fark.index
+    assert res.vergi_ozeti["kdv_karsilastirilan"] == 9  # muhasebeleşmemiş fatura karşılaştırılmaz
+    assert list(res["Muhasebeleşmemiş Faturalar"]["Fatura_No"]) == ["AAA2024000000010"]
+
+
+def test_tevkifat_mutabakati(db):
+    tev = _alis_senaryosu(db)["Tevkifat Kaydı Eksik/Farklı"].set_index("Fatura_No")
+    assert sorted(tev.index) == ["AAA2024000000006", "AAA2024000000008"]
+    assert tev.loc["AAA2024000000006", "Durum"] == checks.TEVKIFAT_YOK
+    assert tev.loc["AAA2024000000008", "Durum"] == checks.TEVKIFAT_TERS
+    assert tev.loc["AAA2024000000006", "Tevkifat_Orani"] == 40
+
+
+def test_vergi_kontrolleri_kapali_ve_iade(db):
+    yukle(db, [ubl("IAD2024000000001", tip="IADE", net=1000)],
+          [yev("IAD2024000000001", "320.01", 1200), yev("IAD2024000000001", "153.01", alacak=1000),
+           yev("IAD2024000000001", "191.01", alacak=200)])
+    res = checks.reconcile(db.get_invoices_df(), db.get_journal_df(), ["153"])
+    assert "KDV Farkları" not in res and "Tevkifat Kaydı Eksik/Farklı" not in res
+    res = checks.reconcile(db.get_invoices_df(), db.get_journal_df(), ["153"], kdv_hesaplari=["191"])
+    assert res["KDV Farkları"].empty and res["KDV'si Kaydedilmemiş Faturalar"].empty
+
+
+def test_genel_rapor_vergi_bolumleri_ve_inceleme(db):
+    from denetim import inceleme
+    _alis_senaryosu(db)
+    _, sections, _, counts = checks.run_full_audit(db, "Aylık", 15, ["153"], 0.01, FIRMA_VKN)
+    for baslik in ("KDV Farkları", "KDV'si Kaydedilmemiş Faturalar", "Tevkifat Kaydı Eksik/Farklı"):
+        assert baslik in sections and inceleme.kontrol_kodu(baslik) is not None
+    assert counts["vergi_ozeti"]["tevkifat_bulgu"] == 2
+    assert "Vergi mutabakatı" in checks.vergi_ozeti_metni(counts["vergi_ozeti"])
+    anahtar = inceleme.bolum_anahtarlari("KDV Farkları", sections["KDV Farkları"])[0]
+    assert anahtar.startswith("KDV_FARKI|" + TEDARIKCI_VKN)
+    _, sections, _, _ = checks.run_full_audit(db, "Aylık", 15, ["153"], 0.01, FIRMA_VKN,
+                                              vergi_ayarlari=checks.VergiAyarlari(kdv_hesaplari=[],
+                                                                                  tevkifat_hesaplari=[]))
+    assert "KDV Farkları" not in sections

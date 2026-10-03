@@ -567,7 +567,15 @@ class AuditApp(ctk.CTk):
                                      int(min_alim))
 
     def add_vergi_rows(self):
-        """Vergi mutabakatı ayarları: maliyete eklenen vergi türü kodları (Varsayılan butonuyla)."""
+        """Vergi mutabakatı ayarları: KDV (191) ve tevkifat (360) hesapları, maliyete eklenen vergi türü kodları
+        (Varsayılan butonuyla)."""
+        row0 = self.create_button_row()
+        kdv = self.add_labeled_entry(row0, "KDV Hesapları (indirilecek):",
+                                     self.setting("kdv_hesaplari", checks.VARSAYILAN_KDV_HESAPLARI), 120,
+                                     "boş: KDV kontrolü yok")
+        tev = self.add_labeled_entry(row0, "Tevkifat Hesapları:",
+                                     self.setting("tevkifat_hesaplari", checks.VARSAYILAN_TEVKIFAT_HESAPLARI), 120,
+                                     "boş: tevkifat kontrolü yok")
         row = self.create_button_row()
         kodlar = self.add_labeled_entry(
             row, "Maliyete Eklenen Vergi Kodları:",
@@ -579,13 +587,16 @@ class AuditApp(ctk.CTk):
             kodlar.insert(0, checks.VARSAYILAN_MALIYET_VERGI_KODLARI)
 
         ctk.CTkButton(row, text="Varsayılan", width=90, height=28, command=reset).pack(side="left")
-        return {"maliyet": kodlar}
+        return {"maliyet": kodlar, "kdv": kdv, "tevkifat": tev}
 
     def read_vergi_ayarlari(self, w):
         """Vergi ayarlarını firma ayarlarına kaydeder ve checks.VergiAyarlari döndürür."""
-        text = w["maliyet"].get().strip()
-        self.db.set_setting("maliyet_vergi_kodlari", text)
-        return checks.VergiAyarlari(checks.parse_vergi_kodlari(text))
+        metin = {k: e.get().strip() for k, e in w.items()}
+        self.db.set_setting("maliyet_vergi_kodlari", metin["maliyet"])
+        self.db.set_setting("kdv_hesaplari", metin["kdv"])
+        self.db.set_setting("tevkifat_hesaplari", metin["tevkifat"])
+        return checks.VergiAyarlari(checks.parse_vergi_kodlari(metin["maliyet"]), parse_account_list(metin["kdv"]),
+                                    parse_account_list(metin["tevkifat"]))
 
     def maliyet_vergili_faturalar(self, vergi):
         """Faturalar + maliyete eklenen vergi tutarları (beklenen maliyet için)."""
@@ -1292,7 +1303,8 @@ class AuditApp(ctk.CTk):
                           "emin olun.", "uyari")
             return
         onekler = self.read_haric_onekler(self.recon_onek_entry)
-        res = checks.reconcile(invoices, journal, accounts, tolerance, self.recon_period_var.get(), onekler, kur)
+        res = checks.reconcile(invoices, journal, accounts, tolerance, self.recon_period_var.get(), onekler, kur,
+                               vergi.kdv_hesaplari, vergi.tevkifat_hesaplari)
         self.recon_sections = OrderedDict([("Eşleşme Özeti", checks.eslesme_ozeti_df(res.eslesme_ozeti)),
                                            ("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(res.faturasiz_ozeti))]
                                           + list(res.items()))
@@ -1303,7 +1315,8 @@ class AuditApp(ctk.CTk):
         self.log(box, f"> {checks.faturasiz_ozeti_metni(res.faturasiz_ozeti)}",
                  None if res.faturasiz_ozeti["isaretli"] else "uyari")
         self.log(box, f"> {checks.kur_ozeti_metni(res.kur_ozeti)}")
-        self.log(box, f"> {checks.maliyet_vergisi_metni(checks.maliyet_vergisi_ozeti(invoices), vergi.maliyet_kodlari)}\n")
+        self.log(box, f"> {checks.maliyet_vergisi_metni(checks.maliyet_vergisi_ozeti(invoices), vergi.maliyet_kodlari)}")
+        self.log(box, f"> {checks.vergi_ozeti_metni(res.vergi_ozeti) or 'Vergi mutabakatı kapalı (hesap kodu yok)'}\n")
         self.log_review_summary(box, res)
         self.show_results(res)
 
@@ -1389,6 +1402,8 @@ class AuditApp(ctk.CTk):
             self.log(box, f"> {checks.eslesme_ozeti_metni(counts['eslesme'])}")
             self.log(box, f"> {checks.faturasiz_ozeti_metni(counts['faturasiz_ozeti'])}")
             self.log(box, f"> {checks.kur_ozeti_metni(counts['kur_ozeti'])}")
+            if counts["vergi_ozeti"]:
+                self.log(box, f"> {checks.vergi_ozeti_metni(counts['vergi_ozeti'])}")
         self.log(box, f"> {checks.maliyet_vergisi_metni(counts['maliyet_vergisi'], vergi.maliyet_kodlari)}")
         self.log(box, "")
         self.log_review_summary(box, sections)
@@ -1427,8 +1442,9 @@ class AuditApp(ctk.CTk):
 
         def save_vergi():
             v = self.read_vergi_ayarlari(vergi_w)
-            messagebox.showinfo("Tamam", f"Vergi ayarları kaydedildi (maliyete eklenen vergi kodu: "
-                                         f"{len(v.maliyet_kodlari)}).")
+            messagebox.showinfo("Tamam", f"Vergi ayarları kaydedildi (KDV hesapları: {', '.join(v.kdv_hesaplari) or '-'}"
+                                         f", tevkifat hesapları: {', '.join(v.tevkifat_hesaplari) or '-'}, maliyete "
+                                         f"eklenen vergi kodu: {len(v.maliyet_kodlari)}).")
 
         self.add_button(vergi_w["maliyet"].master, "💾 Kaydet", save_vergi)
 
