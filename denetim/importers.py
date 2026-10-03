@@ -33,7 +33,11 @@ INVOICE_SCHEMA = {
     "OTV_Tutari": ["ÖTV", "OTV", "ÖTV Tutarı", "ÖTV TL", "Özel Tüketim Vergisi"],
     "Fatura_Tipi": ["Fatura Tipi", "Fatura Türü", "Fatura Turu"],
     "Tevkifat_Orani": ["Tevkifat Oranı", "Tevkifat", "KDV Tevkifat Oranı", "Tevkifat %"],
+    "Yon": ["Yön", "Fatura Yönü", "Fatura Yonu", "Alış/Satış", "Alis_Satis", "Gelen/Giden"],
 }
+# Excel Yon değerleri (Türkçe karakter / büyük-küçük harf duyarsız). Satış satırlarında Tedarikci_VKN / Tedarikci_Ad
+# alanlarına karşı taraf (müşteri) yazılır; satıcı olarak firmanın VKN'si saklanır.
+YONLER = {"ALIS": "ALIS", "A": "ALIS", "GELEN": "ALIS", "SATIS": "SATIS", "S": "SATIS", "GIDEN": "SATIS"}
 # Excel Fatura_Tipi değerleri → (InvoiceTypeCode, ProfileID). IHRACAT bir tip değil senaryodur: istisna faturası.
 FATURA_TIPLERI = {"SATIS": ("SATIS", None), "IADE": ("IADE", None), "TEVKIFAT": ("TEVKIFAT", None),
                   "TEVKIFATIADE": ("TEVKIFATIADE", None), "ISTISNA": ("ISTISNA", None),
@@ -67,7 +71,7 @@ FIELD_LABELS = {
     "Tedarikci_VKN": "Tedarikçi VKN/TCKN", "Tedarikci_Ad": "Tedarikçi Adı", "Urun_Adi": "Ürün Adı",
     "Miktar": "Miktar", "Birim": "Birim", "Fiyat": "Birim Fiyat (KDV hariç)", "Iskonto": "İskonto",
     "KDV_Orani": "KDV Oranı", "Para_Birimi": "Para Birimi", "Kur": "Kur", "OTV_Tutari": "ÖTV Tutarı",
-    "Fatura_Tipi": "Fatura Tipi", "Tevkifat_Orani": "Tevkifat Oranı",
+    "Fatura_Tipi": "Fatura Tipi", "Tevkifat_Orani": "Tevkifat Oranı", "Yon": "Yön (Alış / Satış)",
 }
 # Eşleme türleri: (şema, zorunlu alanlar). Kayıtlı eşlemeler bu anahtarlarla saklanır.
 KIND_YEVMIYE, KIND_FATURA = "YEVMIYE", "FATURA"
@@ -396,11 +400,13 @@ def parse_fatura_tipi(value):
     return FATURA_TIPLERI[anahtar]
 
 
-def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None):
+def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None, company_vkn=None):
     """Fatura Excel'ini okur. Aynı Fatura_No + VKN'ye sahip satırlar tek faturanın kalemleri sayılır.
 
     data: dosya içeriği (bytes) ya da read_raw_excel çıktısı. mapping: ColumnMapping (verilmezse başlık satırı ve
     sütunlar otomatik bulunur). saved_mappings: firmanın kayıtlı eşlemeleri; dosyanın imzası uyuyorsa kullanılır.
+    company_vkn: aktif firmanın VKN'si; Yon = SATIS satırlarında satıcı VKN'si olarak saklanır (karşı taraf, yani
+    Tedarikci_VKN / Tedarikci_Ad, alıcı olarak saklanır).
     """
     df, result = _load_table(data, KIND_FATURA, mapping, saved_mappings)
     if df is None:
@@ -461,6 +467,11 @@ def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None
             fatura_tipi, profil = None, None
         if not fatura_tipi:
             fatura_tipi = "TEVKIFAT" if tevkifat_orani else "SATIS"
+        yon = None
+        if "Yon" in found and not _is_blank(row.get("Yon")):
+            yon = YONLER.get(column_key(row["Yon"]).upper())
+            if yon is None:
+                row_errors.append(f"Yon: bilinmeyen değer ({row['Yon']}); Alış ya da Satış olmalı")
         if otv < 0:
             row_errors.append(f"OTV_Tutari negatif olamaz ({otv})")
         if qty is not None and qty <= 0 and "Miktar boş" not in row_errors:
@@ -496,11 +507,13 @@ def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None
             "otv": otv,
             "tevkifat_orani": tevkifat_orani,
         }
+        karsi_ad = str(row["Tedarikci_Ad"]).strip() if not _is_blank(row["Tedarikci_Ad"]) else ""
         header = {
             "invoice_no": invoice_no,
             "issue_date": issue_date,
             "supplier_vkn": vkn,
-            "supplier_name": str(row["Tedarikci_Ad"]).strip() if not _is_blank(row["Tedarikci_Ad"]) else "",
+            "supplier_name": karsi_ad,
+            "direction": yon,
             "invoice_type": fatura_tipi,
             "profile": profil,
             "currency": currency,
@@ -512,7 +525,8 @@ def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None
             grp["header"] = header
         else:
             first = grp["header"]
-            for fld, label in (("issue_date", "Tarih"), ("currency", "Para_Birimi"), ("invoice_type", "Fatura_Tipi")):
+            for fld, label in (("issue_date", "Tarih"), ("currency", "Para_Birimi"), ("invoice_type", "Fatura_Tipi"),
+                               ("direction", "Yon")):
                 if first[fld] != header[fld]:
                     grp["bad"] = True
                     result.errors.append(
@@ -529,6 +543,9 @@ def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None
                     f"hatalı satır içerdiği için tamamen atlandı")
             continue
         header = grp["header"]
+        if header["direction"] == "SATIS":  # Satıcı firmanın kendisi, karşı taraf alıcıdır
+            header.update(customer_vkn=header["supplier_vkn"], customer_name=header["supplier_name"],
+                          supplier_vkn=normalize_vkn(company_vkn), supplier_name="")
         net = sum(ln["line_net"] for ln in grp["lines"])
         vat_values = [ln["vat_amount"] for ln in grp["lines"] if ln["vat_amount"] is not None]
         otv = round(sum(ln.pop("otv") for ln in grp["lines"]), 2)
@@ -647,7 +664,8 @@ def invoice_template():
     return pd.DataFrame([{
         "Fatura_No": "ABC2024000000001", "Tarih": "15.01.2024", "Tedarikci_VKN": "1234567890",
         "Tedarikci_Ad": "Örnek Tedarikçi A.Ş.", "Urun_Adi": "Örnek Ürün", "Miktar": 10, "Birim": "ADET",
-        "Fiyat": 100.0, "Iskonto": 0, "KDV_Orani": 20, "Para_Birimi": "TRY", "Kur": 1,
+        "Fiyat": 100.0, "Iskonto": 0, "KDV_Orani": 20, "Para_Birimi": "TRY", "Kur": 1, "OTV_Tutari": 0,
+        "Fatura_Tipi": "SATIS", "Tevkifat_Orani": "", "Yon": "Alış",
     }])
 
 

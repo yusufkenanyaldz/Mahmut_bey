@@ -29,7 +29,8 @@ INCELEME_COLS = [DURUM_COL, NOT_COL, TARIH_COL, ANAHTAR_COL]
 OZET_COLS = ["Kontrol", "Bulgu_Sayisi", "Acik", "Sorun_Yok", "Duzeltme_Istendi"]
 
 _VKN, _NO, _BELGE, _URUN, _KONTROL, _NOLAR = "vkn", "no", "belge", "urun", "kontrol", "nolar"
-_ALANLAR = {_VKN: ("Tedarikci_VKN", normalize_vkn), _NO: ("Fatura_No", normalize_doc_no),
+_MUSTERI = "musteri"
+_ALANLAR = {_VKN: ("Tedarikci_VKN", normalize_vkn), _MUSTERI: ("Musteri_VKN", normalize_vkn), _NO: ("Fatura_No", normalize_doc_no),
             _BELGE: ("Yevmiye_Belge_No", normalize_doc_no), _URUN: ("Urun_Adi", normalize_text),
             _KONTROL: ("Kontrol", normalize_text)}
 
@@ -50,6 +51,16 @@ KONTROLLER = [
     ("KDV Farkları", "KDV_FARKI", (_VKN, _NO)),
     ("KDV'si Kaydedilmemiş Faturalar", "KDV_KAYITSIZ", (_VKN, _NO)),
     ("Tevkifat Kaydı Eksik", "TEVKIFAT", (_VKN, _NO)),
+    # Satış faturaları (karşı taraf müşteri)
+    ("Muhasebeleşmemiş Satış Faturaları", "SATIS_MUHASEBESIZ", (_MUSTERI, _NO)),
+    ("Gelir Hesabı Dışına Kaydedilmiş", "SATIS_HESAP_DISI", (_MUSTERI, _NO)),
+    ("Satış Tutar Farkları", "SATIS_TUTAR_FARKI", (_MUSTERI, _NO)),
+    ("Satış Dönem Farkları", "SATIS_DONEM_FARKI", (_MUSTERI, _NO)),
+    ("Satış KDV Farkları", "SATIS_KDV_FARKI", (_MUSTERI, _NO)),
+    ("Satış Belge No Uyuşmayan Eşleşmeler", "SATIS_BELGE_NO_UYUSMAYAN", (_MUSTERI, _NO)),
+    ("Faturası Bulunmayan Gelir Kayıtları", "FATURASIZ_GELIR", (_BELGE,)),
+    ("Satış Belirsiz Eşleşme (Aynı No", "SATIS_BELIRSIZ_AYNI_NO", (_MUSTERI, _NO)),
+    ("Satış Belirsiz Eşleşme (Birden Fazla", "SATIS_BELIRSIZ_SERI_SIRA", (_MUSTERI, _NO)),
 ]
 
 

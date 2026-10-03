@@ -344,6 +344,7 @@ class AuditApp(ctk.CTk):
         self.audit_sections = None
         self.recon_haric = self.audit_haric = None
         self.analysis_result = self.audit_fiyat_haric = self.recon_kur = self.audit_kur_farki = None
+        self.recon_ek, self.audit_ek = [], []
 
         self.title(APP_TITLE)
         self.geometry("1280x800")
@@ -567,8 +568,8 @@ class AuditApp(ctk.CTk):
                                      int(min_alim))
 
     def add_vergi_rows(self):
-        """Vergi mutabakatı ayarları: KDV (191) ve tevkifat (360) hesapları, maliyete eklenen vergi türü kodları
-        (Varsayılan butonuyla)."""
+        """Vergi ve satış mutabakatı ayarları: KDV (191), tevkifat (360), gelir (600–602) ve hesaplanan KDV (391)
+        hesapları, maliyete eklenen vergi türü kodları (Varsayılan butonuyla)."""
         row0 = self.create_button_row()
         kdv = self.add_labeled_entry(row0, "KDV Hesapları (indirilecek):",
                                      self.setting("kdv_hesaplari", checks.VARSAYILAN_KDV_HESAPLARI), 120,
@@ -576,6 +577,12 @@ class AuditApp(ctk.CTk):
         tev = self.add_labeled_entry(row0, "Tevkifat Hesapları:",
                                      self.setting("tevkifat_hesaplari", checks.VARSAYILAN_TEVKIFAT_HESAPLARI), 120,
                                      "boş: tevkifat kontrolü yok")
+        gelir = self.add_labeled_entry(row0, "Gelir Hesapları (satış):",
+                                       self.setting("gelir_hesaplari", checks.VARSAYILAN_GELIR_HESAPLARI), 130,
+                                       "boş: satış mutabakatı yok")
+        skdv = self.add_labeled_entry(row0, "Hesaplanan KDV:",
+                                      self.setting("satis_kdv_hesaplari", checks.VARSAYILAN_SATIS_KDV_HESAPLARI), 80,
+                                      "boş: yok")
         row = self.create_button_row()
         kodlar = self.add_labeled_entry(
             row, "Maliyete Eklenen Vergi Kodları:",
@@ -587,7 +594,7 @@ class AuditApp(ctk.CTk):
             kodlar.insert(0, checks.VARSAYILAN_MALIYET_VERGI_KODLARI)
 
         ctk.CTkButton(row, text="Varsayılan", width=90, height=28, command=reset).pack(side="left")
-        return {"maliyet": kodlar, "kdv": kdv, "tevkifat": tev}
+        return {"maliyet": kodlar, "kdv": kdv, "tevkifat": tev, "gelir": gelir, "satis_kdv": skdv}
 
     def read_vergi_ayarlari(self, w):
         """Vergi ayarlarını firma ayarlarına kaydeder ve checks.VergiAyarlari döndürür."""
@@ -595,8 +602,11 @@ class AuditApp(ctk.CTk):
         self.db.set_setting("maliyet_vergi_kodlari", metin["maliyet"])
         self.db.set_setting("kdv_hesaplari", metin["kdv"])
         self.db.set_setting("tevkifat_hesaplari", metin["tevkifat"])
+        self.db.set_setting("gelir_hesaplari", metin["gelir"])
+        self.db.set_setting("satis_kdv_hesaplari", metin["satis_kdv"])
         return checks.VergiAyarlari(checks.parse_vergi_kodlari(metin["maliyet"]), parse_account_list(metin["kdv"]),
-                                    parse_account_list(metin["tevkifat"]))
+                                    parse_account_list(metin["tevkifat"]), parse_account_list(metin["gelir"]),
+                                    parse_account_list(metin["satis_kdv"]))
 
     def maliyet_vergili_faturalar(self, vergi):
         """Faturalar + maliyete eklenen vergi tutarları (beklenen maliyet için)."""
@@ -1093,8 +1103,10 @@ class AuditApp(ctk.CTk):
         self.clear_main_frame()
         self.create_header("Excel'den Toplu Fatura Aktarımı",
                            "Zorunlu sütunlar: Fatura_No, Tarih, Tedarikci_VKN, Tedarikci_Ad, Urun_Adi, Miktar, Fiyat\n"
-                           "İsteğe bağlı: Birim, Iskonto, KDV_Orani, Para_Birimi, Kur.  Fiyat KDV HARİÇ birim fiyattır. "
-                           "Aynı Fatura_No + VKN'li satırlar tek faturanın kalemleri olarak kaydedilir.")
+                           "İsteğe bağlı: Birim, Iskonto, KDV_Orani, Para_Birimi, Kur, OTV_Tutari, Fatura_Tipi (SATIS, "
+                           "IADE, TEVKIFAT, ISTISNA, IHRACAT ...), Tevkifat_Orani (4/10), Yon (Alış / Satış).  Fiyat "
+                           "KDV HARİÇ birim fiyattır. Aynı Fatura_No + VKN'li satırlar tek faturanın kalemleri olarak "
+                           "kaydedilir. Satış satırlarında Tedarikci_VKN / Tedarikci_Ad alanlarına müşteri yazılır.")
         row = self.create_button_row()
         self.add_button(row, "Excel Dosyası Seç", self.select_and_read_excel)
         self.add_button(row, "🧭 Sütunları Eşle", lambda: self.select_and_read_excel(force_wizard=True),
@@ -1119,7 +1131,7 @@ class AuditApp(ctk.CTk):
             if not self.confirm_reimport("FATURA_EXCEL", digest, name):
                 self.log(box, "[İPTAL] Dosya yüklenmedi.", "uyari")
                 return
-            reader = functools.partial(importers.read_invoice_excel, source_file=name)
+            reader = functools.partial(importers.read_invoice_excel, source_file=name, company_vkn=self.firm.vkn)
             res = self.read_excel_with_mapping(box, importers.KIND_FATURA, reader, data, name, force_wizard)
         except Exception as e:
             self.log(box, f"[HATA] Dosya okunamadı: {e}", "hata")
@@ -1211,7 +1223,8 @@ class AuditApp(ctk.CTk):
         box.delete("1.0", "end")
         self.log(box, "> Analiz motoru başlatıldı...")
         self.update()
-        res = checks.fiyat_analizi(self.db.get_lines_df(), self.period_var.get(), threshold, kurallar)
+        lines = checks.alis_faturalari(self.db.get_lines_df(), self.firm.vkn)  # Satış faturaları analiz edilmez
+        res = checks.fiyat_analizi(lines, self.period_var.get(), threshold, kurallar)
         self.analysis_result = res
         self.analysis_df = res.satirlar
         if res.ozet["toplam"] == 0:
@@ -1265,7 +1278,9 @@ class AuditApp(ctk.CTk):
                            "eşleşir (153 → 153.01, 153.02 ...). Aynı belgenin karşı hesaplarını (ör. 153 ile 320) "
                            "birlikte girmeyin; toplamlar birbirini sıfırlar. Faturasız kayıt listesine yalnızca "
                            "borç yönlü belgeler alınır; belge no'su hariç öneklerden biriyle başlayanlar (bordro, "
-                           "amortisman, mahsup ...) listelenmez.")
+                           "amortisman, mahsup ...) listelenmez. Alış faturalarının KDV'si (191) ve tevkifatı (360), "
+                           "satış faturaları (satıcı VKN'si firma VKN'si olanlar) gelir hesapları ve hesaplanan KDV "
+                           "(391) ile ayrıca karşılaştırılır.")
         opts = self.create_button_row()
         self.accounts_entry = self.add_labeled_entry(opts, "Hesap Kodları:", self.setting("accounts", ""), 220,
                                                      "ör. 153, 770")
@@ -1277,8 +1292,9 @@ class AuditApp(ctk.CTk):
         self.add_button(row, "▶ Mutabakat Kontrolü Yap", self.run_reconciliation,
                         fg_color=("#e83e8f", "#d33682"), hover_color=("#d33682", "#a32a65"))
         self.add_button(row, "📥 Excel'e Aktar", lambda: self.export_sections_dialog(
-            self.recon_panel.export_sections(self.with_kur_sheet(
-                self.with_haric_sheet(self.recon_sections, self.recon_haric, self.recon_haric_var), self.recon_kur)),
+            self.recon_panel.export_sections(self.with_satis_sheets(self.with_kur_sheet(
+                self.with_haric_sheet(self.recon_sections, self.recon_haric, self.recon_haric_var), self.recon_kur),
+                self.recon_ek, self.recon_haric_var)),
             "Mutabakat_Raporu.xlsx"),
                         fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
         self.recon_panel, self.recon_box = self.create_results_area()
@@ -1298,27 +1314,77 @@ class AuditApp(ctk.CTk):
         invoices, journal = self.maliyet_vergili_faturalar(vergi), self.db.get_journal_df()
         if invoices.empty or journal.empty:
             self.recon_sections = self.recon_haric = self.recon_kur = None
+            self.recon_ek = []
             self.show_results({})
             self.log(box, "[UYARI] İşlem yapılamadı. Hem Fatura hem de Yevmiye kayıtlarının yüklü olduğundan "
                           "emin olun.", "uyari")
             return
         onekler = self.read_haric_onekler(self.recon_onek_entry)
-        res = checks.reconcile(invoices, journal, accounts, tolerance, self.recon_period_var.get(), onekler, kur,
+        alis = checks.alis_faturalari(invoices, self.firm.vkn)
+        satis = checks.satis_faturalari(invoices, self.firm.vkn)
+        res = checks.reconcile(alis, journal, accounts, tolerance, self.recon_period_var.get(), onekler, kur,
                                vergi.kdv_hesaplari, vergi.tevkifat_hesaplari)
-        self.recon_sections = OrderedDict([("Eşleşme Özeti", checks.eslesme_ozeti_df(res.eslesme_ozeti)),
-                                           ("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(res.faturasiz_ozeti))]
-                                          + list(res.items()))
+        sres = None
+        if not satis.empty and vergi.gelir_hesaplari:
+            sres = checks.satis_mutabakati(satis, journal, vergi.gelir_hesaplari, vergi.satis_kdv_hesaplari, tolerance,
+                                           self.recon_period_var.get(), onekler, kur)
+        bulgular = OrderedDict(list(res.items()) + (list(sres.items()) if sres is not None else []))
+        head = [("Eşleşme Özeti", checks.eslesme_ozeti_df(res.eslesme_ozeti)),
+                ("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(res.faturasiz_ozeti))]
+        self.recon_ek = []
+        if sres is not None:
+            head += self.satis_ozet_sayfalari(sres.eslesme_ozeti, sres.faturasiz_ozeti)
+            self.recon_ek = self.satis_bilgi_sayfalari(sres.kur_farki, sres.faturasiz_haric)
+        self.recon_sections = OrderedDict(head + list(bulgular.items()))
         self.recon_haric, self.recon_kur = res.faturasiz_haric, res.kur_farki
         self.log(box, f"> Hesaplar: {', '.join(accounts)}  |  Tolerans: {tolerance:g} TL  |  Kur toleransı "
-                      f"(dövizli): %{kur:g}")
+                      f"(dövizli): %{kur:g}  |  Alış faturası: {len(alis)}  |  Satış faturası: {len(satis)}")
         self.log(box, f"> {checks.eslesme_ozeti_metni(res.eslesme_ozeti)}")
         self.log(box, f"> {checks.faturasiz_ozeti_metni(res.faturasiz_ozeti)}",
                  None if res.faturasiz_ozeti["isaretli"] else "uyari")
         self.log(box, f"> {checks.kur_ozeti_metni(res.kur_ozeti)}")
-        self.log(box, f"> {checks.maliyet_vergisi_metni(checks.maliyet_vergisi_ozeti(invoices), vergi.maliyet_kodlari)}")
-        self.log(box, f"> {checks.vergi_ozeti_metni(res.vergi_ozeti) or 'Vergi mutabakatı kapalı (hesap kodu yok)'}\n")
-        self.log_review_summary(box, res)
-        self.show_results(res)
+        self.log(box, f"> {checks.maliyet_vergisi_metni(checks.maliyet_vergisi_ozeti(alis), vergi.maliyet_kodlari)}")
+        self.log(box, f"> {checks.vergi_ozeti_metni(res.vergi_ozeti) or 'Vergi mutabakatı kapalı (hesap kodu yok)'}")
+        self.log_satis(box, sres.eslesme_ozeti if sres is not None else None,
+                       sres.faturasiz_ozeti if sres is not None else None, sres.kur_ozeti if sres is not None else None,
+                       sres.vergi_ozeti if sres is not None else None, len(satis), vergi)
+        self.log(box, "")
+        self.log_review_summary(box, bulgular)
+        self.show_results(bulgular)
+
+    @staticmethod
+    def satis_ozet_sayfalari(eslesme, faturasiz):
+        return [("Satış Eşleşme Özeti", checks.eslesme_ozeti_df(eslesme)),
+                ("Faturasız Gelir Özeti", checks.faturasiz_ozeti_df(faturasiz))]
+
+    @staticmethod
+    def satis_bilgi_sayfalari(kur_farki, haric):
+        """Satış mutabakatının Excel'e eklenen bilgi sayfaları: (başlık, df, hariç seçeneğine bağlı mı)"""
+        return [("Satış Kur Farkı (Tolerans İçi)", kur_farki, False),
+                ("Faturasız Gelir Listesinden Hariç Tutulanlar", haric, True)]
+
+    @staticmethod
+    def with_satis_sheets(sections, ek, haric_var):
+        if not sections or not ek:
+            return sections
+        return OrderedDict(list(sections.items()) + [(t, df) for t, df, haricli in ek
+                                                     if not haricli or (haric_var is not None and haric_var.get())])
+
+    def log_satis(self, box, eslesme, faturasiz, kur_ozeti, kdv_ozeti, n_satis, vergi):
+        """Satış mutabakatı özet satırları."""
+        if eslesme is None:
+            if n_satis and not vergi.gelir_hesaplari:
+                self.log(box, "> Satış mutabakatı: gelir hesap kodu girilmediği için atlandı.", "uyari")
+            elif not n_satis:
+                self.log(box, "> Satış mutabakatı: satış faturası yok (satıcı VKN'si firma VKN'si olan ya da Excel'de "
+                              "Yon = Satış verilen fatura bulunamadı)." + ("" if self.firm.vkn else
+                                                                         " Firma VKN'si girilmemiş."))
+            return
+        self.log(box, f"> SATIŞ ({n_satis} fatura; gelir: {', '.join(vergi.gelir_hesaplari)}) — "
+                      f"{checks.eslesme_ozeti_metni(eslesme)}", "baslik")
+        self.log(box, f"> {checks.faturasiz_ozeti_metni(faturasiz)}")
+        self.log(box, f"> Satış {checks.kur_ozeti_metni(kur_ozeti)}")
+        self.log(box, f"> {checks.satis_kdv_ozeti_metni(kdv_ozeti) or 'Satış KDV kontrolü kapalı (hesap kodu yok)'}")
 
     @staticmethod
     def with_kur_sheet(sections, kur_farki):
@@ -1341,9 +1407,11 @@ class AuditApp(ctk.CTk):
     def show_audit_frame(self):
         self.clear_main_frame()
         self.create_header("Genel Denetim Raporu",
-                           "Tüm kontroller tek seferde çalıştırılır: fiyat anomalileri, mutabakat (muhasebeleşmemiş, "
-                           "yanlış hesap, tutar farkı, dönem farkı, faturasız kayıt), olası mükerrer faturalar, "
-                           "fatura hesaplama tutarsızlıkları ve alıcı VKN kontrolü.")
+                           "Tüm kontroller tek seferde çalıştırılır: fiyat anomalileri (alışlar), alış mutabakatı "
+                           "(muhasebeleşmemiş, yanlış hesap, tutar farkı — ÖTV gibi maliyete eklenen vergiler dahil —, "
+                           "dönem farkı, faturasız kayıt, KDV (191) ve tevkifat (360)), satış mutabakatı (gelir "
+                           "hesapları, hesaplanan KDV, faturasız gelir), olası mükerrer faturalar, fatura hesaplama "
+                           "tutarsızlıkları ve alıcı VKN kontrolü. Satıcı VKN'si firma VKN'si olan faturalar satıştır.")
         opts = self.create_button_row()
         self.audit_period_var = self.add_period_menu(opts)
         self.audit_threshold = self.add_labeled_entry(opts, "Sapma Eşiği (%):", self.setting("threshold", "15"), 70)
@@ -1357,10 +1425,10 @@ class AuditApp(ctk.CTk):
         self.add_button(row, "▶ Tüm Kontrolleri Çalıştır", self.run_full_audit,
                         fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
         self.add_button(row, "📥 Raporu Excel'e Aktar", lambda: self.export_sections_dialog(
-            self.audit_panel.export_sections(self.with_fiyat_haric_sheet(
+            self.audit_panel.export_sections(self.with_satis_sheets(self.with_fiyat_haric_sheet(
                 self.with_kur_sheet(self.with_haric_sheet(self.audit_sections, self.audit_haric, self.audit_haric_var),
                                     self.audit_kur_farki),
-                self.audit_fiyat_haric, self.audit_rules)),
+                self.audit_fiyat_haric, self.audit_rules), self.audit_ek, self.audit_haric_var)),
             "Denetim_Raporu.xlsx"))
         self.audit_panel, self.audit_box = self.create_results_area()
         self.log(self.audit_box, "> Rapor bekleniyor...")
@@ -1386,6 +1454,8 @@ class AuditApp(ctk.CTk):
         self.audit_haric = counts["faturasiz_haric"]
         self.audit_fiyat_haric = counts["fiyat_haric"]
         self.audit_kur_farki = counts["kur_farki"]
+        st = counts["satis"]
+        self.audit_ek = self.satis_bilgi_sayfalari(st["kur_farki"], st["faturasiz_haric"]) if st else []
         if counts["fatura"] == 0:
             self.audit_sections = None
             self.show_results({})
@@ -1395,8 +1465,11 @@ class AuditApp(ctk.CTk):
         if counts["eslesme"]:
             head.append(("Eşleşme Özeti", checks.eslesme_ozeti_df(counts["eslesme"])))
             head.append(("Faturasız Kayıt Özeti", checks.faturasiz_ozeti_df(counts["faturasiz_ozeti"])))
+        if st:
+            head += self.satis_ozet_sayfalari(st["eslesme"], st["faturasiz_ozeti"])
         self.audit_sections = OrderedDict(head + list(sections.items()))
-        self.log(box, f"> {counts['fatura']} fatura, {counts['yevmiye']} yevmiye satırı incelendi.")
+        self.log(box, f"> {counts['fatura']} fatura (alış {counts['alis_fatura']}, satış {counts['satis_fatura']}), "
+                      f"{counts['yevmiye']} yevmiye satırı incelendi.")
         self.log(box, f"> {checks.fiyat_ozeti_metni(counts['fiyat_ozeti'])}")
         if counts["eslesme"]:
             self.log(box, f"> {checks.eslesme_ozeti_metni(counts['eslesme'])}")
@@ -1405,6 +1478,9 @@ class AuditApp(ctk.CTk):
             if counts["vergi_ozeti"]:
                 self.log(box, f"> {checks.vergi_ozeti_metni(counts['vergi_ozeti'])}")
         self.log(box, f"> {checks.maliyet_vergisi_metni(counts['maliyet_vergisi'], vergi.maliyet_kodlari)}")
+        if st:
+            self.log_satis(box, st["eslesme"], st["faturasiz_ozeti"], st["kur_ozeti"], st["vergi_ozeti"], st["fatura"],
+                           vergi)
         self.log(box, "")
         self.log_review_summary(box, sections)
         for note in notes:

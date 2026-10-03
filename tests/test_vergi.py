@@ -301,3 +301,129 @@ def test_genel_rapor_vergi_bolumleri_ve_inceleme(db):
                                               vergi_ayarlari=checks.VergiAyarlari(kdv_hesaplari=[],
                                                                                   tevkifat_hesaplari=[]))
     assert "KDV Farkları" not in sections
+
+
+# ------------------------------------------------------------------ 7.4 satış faturaları
+MUSTERI_VKN = "4444444444"
+
+
+def test_satis_yonu_tespiti():
+    inv = pd.DataFrame({"supplier_vkn": [FIRMA_VKN, TEDARIKCI_VKN, FIRMA_VKN, TEDARIKCI_VKN],
+                        "invoice_type": ["SATIS", "SATIS", "IADE", "SATIS"],
+                        "direction": [None, None, None, "SATIS"]})
+    assert list(checks.fatura_yonleri(inv, FIRMA_VKN)) == ["SATIS", "ALIS", "ALIS", "SATIS"]
+    # Firma VKN'si yoksa yalnızca açıkça verilen yön satış sayılır
+    assert list(checks.fatura_yonleri(inv, "")) == ["ALIS", "ALIS", "ALIS", "SATIS"]
+    assert len(checks.satis_faturalari(inv, FIRMA_VKN)) == 2
+
+
+def test_kdv_istisna():
+    assert checks.kdv_istisna("IHRACAT", "ISTISNA") and checks.kdv_istisna("TEMELFATURA", "ISTISNA")
+    assert checks.kdv_istisna(None, "IHRACKAYITLI") and not checks.kdv_istisna("TICARIFATURA", "SATIS")
+
+
+def test_excel_satis_yonu(db):
+    df = pd.DataFrame([
+        {"Fatura_No": "S1", "Tarih": "10.07.2024", "Tedarikci_VKN": MUSTERI_VKN, "Tedarikci_Ad": "Müşteri",
+         "Urun_Adi": "Halı", "Miktar": 1, "Fiyat": 1000, "KDV_Orani": 20, "Yön": "Satış"},
+        {"Fatura_No": "S2", "Tarih": "10.07.2024", "Tedarikci_VKN": MUSTERI_VKN, "Tedarikci_Ad": "Yabancı",
+         "Urun_Adi": "Halı", "Miktar": 1, "Fiyat": 1000, "KDV_Orani": 0, "Yön": "GİDEN", "Fatura Tipi": "İhracat"},
+        {"Fatura_No": "A1", "Tarih": "10.07.2024", "Tedarikci_VKN": TEDARIKCI_VKN, "Tedarikci_Ad": "Tedarikçi",
+         "Urun_Adi": "İplik", "Miktar": 1, "Fiyat": 1000, "KDV_Orani": 20, "Yön": "Alış"},
+        {"Fatura_No": "X1", "Tarih": "10.07.2024", "Tedarikci_VKN": TEDARIKCI_VKN, "Tedarikci_Ad": "?",
+         "Urun_Adi": "İplik", "Miktar": 1, "Fiyat": 1000, "Yön": "Belirsiz"}])
+    res = importers.read_invoice_excel(xlsx(df), company_vkn=FIRMA_VKN)
+    h = {x["invoice_no"]: x for x, _ in res.items}
+    assert set(h) == {"S1", "S2", "A1"} and any("Yon" in e for e in res.errors)
+    assert h["S1"]["direction"] == "SATIS" and h["S1"]["supplier_vkn"] == FIRMA_VKN
+    assert h["S1"]["customer_vkn"] == MUSTERI_VKN and h["S1"]["customer_name"] == "Müşteri"
+    assert h["S2"]["invoice_type"] == "ISTISNA" and h["S2"]["profile"] == "IHRACAT"
+    assert h["A1"]["direction"] == "ALIS" and h["A1"]["supplier_vkn"] == TEDARIKCI_VKN
+    db.save_invoices(res.items, "FATURA_EXCEL", "f.xlsx", "h")
+    yon = checks.fatura_yonleri(db.get_invoices_df(), "")  # açık yön firma VKN'si olmadan da geçerli
+    assert sorted(yon) == ["ALIS", "SATIS", "SATIS"]
+
+
+def _satis_senaryosu(db):
+    s = lambda no, **kw: ubl(no, satici=FIRMA_VKN, alici=MUSTERI_VKN, **kw)  # noqa: E731
+    x = [s("SAT2024000000001", net=1000),                                      # doğru
+         s("SAT2024000000002", net=1000),                                      # muhasebeleşmemiş
+         s("SAT2024000000003", net=1000),                                      # tutar farkı (600 = 900)
+         s("SAT2024000000004", net=1000),                                      # KDV farkı (391 = 100)
+         s("SAT2024000000005", net=1000),                                      # 391 yok
+         s("SAT2024000000006", net=5000, kdv_orani=0, tip="ISTISNA", profil="IHRACAT", doviz="EUR", kur=2),  # ihracat
+         s("SAT2024000000007", net=5000, kdv_orani=0, tip="ISTISNA", profil="IHRACAT"),  # ihracata 391 yazılmış
+         s("SAT2024000000008", net=10_000, tip="TEVKIFAT", tevkifat=1000, tevkifat_orani=50),  # tevkifatlı satış
+         ubl("ALI2024000000001", net=500)]                                   # alış faturası
+    j = []
+    for no, gelir, kdv in (("SAT2024000000001", 1000, 200), ("SAT2024000000003", 900, 200),
+                           ("SAT2024000000004", 1000, 100), ("SAT2024000000005", 1000, 0),
+                           ("SAT2024000000006", 10_000, 0), ("SAT2024000000007", 5000, 1000),
+                           ("SAT2024000000008", 10_000, 1000)):
+        j += [yev(no, "120.01", gelir + kdv), yev(no, "600.01" if "06" not in no else "601.01", alacak=gelir)]
+        if kdv:
+            j.append(yev(no, "391.01", alacak=kdv))
+    j += [yev("SAT2024000000999", "120.01", 3000), yev("SAT2024000000999", "600.01", alacak=3000),  # faturasız gelir
+          yev("MAHSUP-07", "600.01", alacak=50), yev("MAHSUP-07", "100.01", 50),                    # hariç önek
+          yev("DUZ2024000000001", "600.01", 400), yev("DUZ2024000000001", "120.01", alacak=400),    # borç yönlü
+          yev("ALI2024000000001", "153.01", 500), yev("ALI2024000000001", "191.01", 100),
+          yev("ALI2024000000001", "320.01", alacak=600)]
+    yukle(db, x, j)
+
+
+def test_satis_mutabakati(db):
+    _satis_senaryosu(db)
+    inv = db.get_invoices_df()
+    satis = checks.satis_faturalari(inv, FIRMA_VKN)
+    assert len(satis) == 8
+    res = checks.satis_mutabakati(satis, db.get_journal_df(), ["600", "601", "602"], ["391"])
+    assert list(res["Muhasebeleşmemiş Satış Faturaları"]["Fatura_No"]) == ["SAT2024000000002"]
+    fark = res["Satış Tutar Farkları"]
+    assert list(fark["Fatura_No"]) == ["SAT2024000000003"] and "Musteri_VKN" in fark
+    assert fark.iloc[0]["Musteri_VKN"] == MUSTERI_VKN and "Beklenen_Tutar_TL" not in fark
+    kdv = res["Satış KDV Farkları"].set_index("Fatura_No")
+    assert sorted(kdv.index) == ["SAT2024000000004", "SAT2024000000005", "SAT2024000000007"]
+    assert kdv.loc["SAT2024000000005", "Durum"] == checks.SATIS_KDV_YOK
+    assert kdv.loc["SAT2024000000007", "Durum"] == checks.SATIS_KDV_ISTISNA
+    assert kdv.loc["SAT2024000000004", "Durum"] == checks.SATIS_KDV_FARKLI
+    # İhracat faturasında KDV beklenmez; tevkifatlı satışta 391 = KDV − tevkif edilen
+    assert res.vergi_ozeti["istisna"] == 2
+    assert list(res["Faturası Bulunmayan Gelir Kayıtları"]["Yevmiye_Belge_No"]) == ["SAT2024000000999"]
+    assert res.faturasiz_ozeti["borc_yonlu"] == 1 and res.faturasiz_ozeti["haric_onek"] == 1
+    assert "Faturasız gelir kaydı" in checks.faturasiz_ozeti_metni(res.faturasiz_ozeti)
+    assert res["Satış Dönem Farkları"].empty
+
+
+def test_genel_rapor_satis_ve_alis_ayrimi(db):
+    from denetim import inceleme
+    _satis_senaryosu(db)
+    _, sections, notes, counts = checks.run_full_audit(db, "Aylık", 15, ["153"], 0.01, FIRMA_VKN)
+    assert counts["alis_fatura"] == 1 and counts["satis_fatura"] == 8
+    # Satışlar alış mutabakatına, fiyat analizine, mükerrer ve alıcı VKN kontrolüne girmez
+    assert sections["Muhasebeleşmemiş Faturalar"].empty
+    assert sections["Alıcısı Firma Olmayan Faturalar"].empty
+    assert counts["fiyat_ozeti"]["toplam"] == 1
+    assert list(sections["Muhasebeleşmemiş Satış Faturaları"]["Fatura_No"]) == ["SAT2024000000002"]
+    assert counts["satis"]["vergi_ozeti"]["kdv_farki"] == 3
+    for baslik in checks.SATIS_BASLIKLARI.values():
+        assert baslik in sections, baslik
+        assert inceleme.kontrol_kodu(baslik) is not None, baslik
+    key = inceleme.bolum_anahtarlari("Satış Tutar Farkları", sections["Satış Tutar Farkları"])[0]
+    assert key == f"SATIS_TUTAR_FARKI|{MUSTERI_VKN}|SAT2024000000003"
+    view = inceleme.bolumlere_uygula(sections, {key: {"durum": inceleme.DURUM_SORUN_YOK}})
+    assert view["Satış Tutar Farkları"][inceleme.DURUM_COL].tolist() == [inceleme.DURUM_SORUN_YOK]
+    # Gelir hesabı boşsa satış mutabakatı atlanır
+    _, sections, notes, counts = checks.run_full_audit(db, "Aylık", 15, ["153"], 0.01, FIRMA_VKN,
+                                                       vergi_ayarlari=checks.VergiAyarlari(gelir_hesaplari=[]))
+    assert counts["satis"] is None and "Satış Tutar Farkları" not in sections
+    assert any("satış mutabakatı atlandı" in n for n in notes)
+
+
+def test_firma_kestigi_iade_alis_sayilir_alici_kontrolu_yok(db):
+    yukle(db, [ubl("IAD2024000000001", satici=FIRMA_VKN, alici=TEDARIKCI_VKN, tip="IADE", net=100)],
+          [yev("IAD2024000000001", "320.01", 120), yev("IAD2024000000001", "153.01", alacak=100),
+           yev("IAD2024000000001", "191.01", alacak=20)])
+    _, sections, _, counts = checks.run_full_audit(db, "Aylık", 15, ["153"], 0.01, FIRMA_VKN)
+    assert counts["alis_fatura"] == 1 and counts["satis"] is None
+    assert sections["Alıcısı Firma Olmayan Faturalar"].empty and sections["Tutar Farkları"].empty
+    assert sections["KDV Farkları"].empty
