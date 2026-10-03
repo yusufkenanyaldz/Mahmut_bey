@@ -37,8 +37,20 @@ INFO_SECTIONS = {
     "Belge No Uyuşmayan Eşleşmeler": "belge_no_uyusmayan",
     "Belirsiz Eşleşme (Birden Fazla Seri+Sıra Adayı)": "belirsiz_seri_sira",
 }
-# Elle müdahale süresi tahmini (dakika)
-FRICTION_MIN = {"baslik_satiri": 5, "sutun_adi": 5, "belge_no_aciklamada": 20, "firma_degisimi": 3}
+# Elle müdahale süresi tahmini (dakika). Başlık satırı ve "Borç Tutarı" gibi sütun adlarını program kendisi
+# çözdüğü için (madde 3) yalnızca belge no'su ayrı sütunda olmayan dökümler için muhasebeciden yeni döküm istenir.
+FRICTION_MIN = {"belge_no_ayri_sutun_istendi": 20, "firma_degisimi": 3}
+
+
+def ayri_belge_no_dokumu(path):
+    """Muhasebecinin Belge No sütunu eklenmiş yeni dökümünü temsil eder (simülasyonda açıklamadan türetilir;
+    program bunu yapmaz, belge numarasını yalnızca ayrı bir sütundan okur)."""
+    df = pd.read_excel(path, dtype=object)
+    df.insert(df.columns.get_loc("Tarih") + 1, "Belge No", df["Açıklama"].astype(str).str.split(" - ").str[0])
+    df["Açıklama"] = df["Açıklama"].astype(str).str.split(" - ", n=1).str[1]
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    return buf.getvalue()
 
 
 def import_firm(meta, db, log):
@@ -77,33 +89,26 @@ def import_firm(meta, db, log):
         dup += len(dups)
     t_xl = time.time() - t1
 
-    # Yevmiye: önce dosyayı olduğu gibi dene, olmazsa Metin'in elle yaptığı düzeltmeler
+    # Yevmiye: dosya olduğu gibi yüklenir (başlık satırı ve sütun adlarını program kendisi bulur). Belge no ayrı
+    # sütunda değilse program açık bir hata verir; Metin muhasebeciden Belge No sütunlu yeni döküm ister.
     t2 = time.time()
     friction = []
     jpath = os.path.join(d, "yevmiye.xlsx")
     data = open(jpath, "rb").read()
     res = importers.read_journal_excel(data)
     attempts = [("ilk deneme", res.errors[:1])]
-    if not res.items and res.errors:
-        df = pd.read_excel(jpath, dtype=object)
-        if df.columns[0] != "Tarih" and str(df.columns[0]).startswith(meta["name"][:5]):
-            df = pd.read_excel(jpath, dtype=object, header=3)
-            friction.append("baslik_satiri")
-        if "Borç Tutarı" in df.columns:
-            df = df.rename(columns={"Borç Tutarı": "Borç", "Alacak Tutarı": "Alacak"})
-            friction.append("sutun_adi")
-        if not any(c in df.columns for c in ("Belge No", "Evrak No", "Belge_No")) and "Açıklama" in df.columns:
-            df["Belge_No"] = df["Açıklama"].astype(str).str.split(" - ").str[0]
-            friction.append("belge_no_aciklamada")
-        buf = io.BytesIO()
-        df.to_excel(buf, index=False)
-        data = buf.getvalue()
+    if not res.items and "Belge_No" in res.missing:
+        friction.append("belge_no_ayri_sutun_istendi")
+        data = ayri_belge_no_dokumu(jpath)
         res = importers.read_journal_excel(data)
-        attempts.append(("düzeltilmiş dosya", res.errors[:1]))
+        attempts.append(("muhasebeciden yeni döküm", res.errors[:1]))
+    elif not res.items:
+        friction.append("yuklenemedi")
     saved = db.save_journal(res.items, "yevmiye.xlsx", importers.file_hash(data)) if res.items else 0
     t_j = time.time() - t2
     log.update(added=added, dup=dup, import_errors=len(errors), import_warnings=len(warnings),
                journal_rows=saved, journal_errors=len(res.errors), friction=friction, attempts=attempts,
+               journal_infos=res.infos,
                t_xml=round(t_xml, 1), t_excel=round(t_xl, 1), t_journal=round(t_j, 1),
                sample_errors=errors[:3], sample_warnings=warnings[:3])
 
@@ -203,6 +208,10 @@ def print_totals(all_results):
     for k, (a, b, c, n) in style.items():
         print(f"  {k:9s} firma={n:2d} yakalanan={a:3d}/{b:3d} yanlış alarm={c:5d} bilgi={dict(bilgi[k])}")
     print("Eşleştirme yöntemleri:", dict(yontem))
+    elle = Counter(f for r in all_results for f in r["friction"])
+    n_elle = sum(1 for r in all_results if r["friction"])
+    print(f"Elle müdahale gereken yevmiye dosyası: {n_elle}/{len(all_results)} {dict(elle)}  "
+          f"(tahmini {sum(FRICTION_MIN.get(k, 0) * v for k, v in elle.items())} dk)")
 
 
 def main():

@@ -106,22 +106,32 @@ def column_key(name):
     return re.sub(r"[^a-z0-9]", "", text)
 
 
+def match_columns(columns, schema):
+    """Sütun başlıklarını şemadaki standart adlara eşler.
+
+    schema: {standart_ad: [takma_ad, ...]}
+    Dönüş: {standart_ad: dosyadaki_sütun_adı} (her standart ad ve her sütun en çok bir kez kullanılır)
+    """
+    lookup = {}
+    for standard, aliases in schema.items():
+        for alias in [standard] + list(aliases):
+            lookup.setdefault(column_key(alias), standard)
+    mapping = {}
+    for col in columns:
+        std = lookup.get(column_key(col))
+        if std and std not in mapping:
+            mapping[std] = col
+    return mapping
+
+
 def map_columns(df, schema):
     """Excel sütunlarını şemadaki standart adlara eşler.
 
     schema: {standart_ad: [takma_ad, ...]}
     Dönüş: (yeniden adlandırılmış df, bulunan standart adlar kümesi)
     """
-    lookup = {}
-    for standard, aliases in schema.items():
-        for alias in [standard] + list(aliases):
-            lookup[column_key(alias)] = standard
-    rename = {}
-    for col in df.columns:
-        std = lookup.get(column_key(col))
-        if std and std not in rename.values():
-            rename[col] = std
-    return df.rename(columns=rename), set(rename.values())
+    mapping = match_columns(df.columns, schema)
+    return df.rename(columns={col: std for std, col in mapping.items()}), set(mapping)
 
 
 def period_of(iso_date, period_type):

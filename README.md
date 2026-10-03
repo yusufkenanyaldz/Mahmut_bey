@@ -57,8 +57,38 @@ Bir faturanın herhangi bir satırı hatalıysa fatura eksik kaydedilmesin diye 
 
 **Yevmiye Excel** — zorunlu: `Tarih, Belge_No, Hesap_Kodu` ve `Borc + Alacak` *ya da* `Tutar`; isteğe bağlı `Aciklama`.
 
-Sütun başlıklarında Türkçe karakter, boşluk ve büyük/küçük harf farkı tolere edilir
-(ör. `Tedarikçi VKN`, `Borç`, `Hesap Kodu`).
+**Belge numarası mutlaka ayrı bir sütunda olmalıdır.** Program belge numarasını açıklama metninin içinden
+ayıklamaz. Belge no sütunu olmayan bir döküm yüklendiğinde açık bir hata verilir; muhasebe programından belge
+numarasının ayrı sütunda olduğu bir döküm alın (ör. dökümün sütunlarına **Evrak No / Belge No** ekleyerek).
+`Fiş No` / `Yevmiye No` belge numarası sayılmaz (fiş sıra numarasıdır).
+
+Sütun başlıklarında Türkçe karakter, boşluk, noktalama ve büyük/küçük harf farkı tolere edilir. Muhasebe
+programlarının yaygın başlıkları tanınır, örneğin:
+
+| Alan | Tanınan başlıklar (örnek) |
+|---|---|
+| Tarih | Tarih, Fiş Tarihi, Yevmiye Tarihi, Kayıt Tarihi, İşlem Tarihi, Evrak Tarihi |
+| Belge_No | Belge No, Belge Numarası, Evrak No, Evrak Numarası, Fatura No |
+| Hesap_Kodu | Hesap Kodu, Hesap No, Hesap, Muhasebe Hesap Kodu |
+| Borc / Alacak | Borç, Borç Tutarı, Borç TL, Borç (TL) / Alacak, Alacak Tutarı, Alacak TL |
+| Aciklama | Açıklama, Fiş Açıklaması, Satır Açıklaması |
+
+Fatura Excel'inde de `Fatura No`, `Fatura Tarihi`, `Satıcı VKN/TCKN`, `Satıcı Unvanı`, `Mal/Hizmet`, `Birim Fiyatı`,
+`KDV %` gibi başlıklar tanınır.
+
+### İçe aktarma sihirbazı (yevmiye ve fatura Excel'i)
+
+- **Başlık satırı otomatik bulunur:** ilk 20 satır taranır, bilinen sütun adlarıyla en çok eşleşen satır başlık
+  kabul edilir. Üstteki firma adı / "YEVMİYE DEFTERİ DÖKÜMÜ" gibi satırlar ve boş satırlar atlanır.
+- **Özet satırları veri sayılmaz:** "Toplam", "Genel Toplam", "Ara Toplam", "Nakli Yekün", "Devreden" gibi
+  tarihsiz satırlar ve sayfa sonlarında tekrarlanan başlık satırları atlanır; günlükte **[BİLGİ]** olarak
+  hangi satırların atlandığı yazılır.
+- **Sütun eşleme penceresi:** zorunlu sütunlar bulunamazsa (ya da **🧭 Sütunları Eşle** butonuyla) açılır.
+  Algılanan başlık satırı (değiştirilebilir), ilk 10 satırın önizlemesi ve her alan için dosyadaki sütunu
+  seçtiren listeler gösterilir. Bir sütun yalnızca bir alana eşlenebilir.
+- **Eşleme hatırlanır:** onaylanan eşleme aktif firmanın veritabanında dosyanın sütun başlıkları imzasıyla
+  saklanır. Aynı firmadan aynı biçimde (aynı sütun başlıklarıyla) gelen dosyada pencere açılmadan uygulanır ve
+  günlüğe "Kayıtlı eşleme kullanıldı" yazılır. **Tüm Verileri Sil** kayıtlı eşlemeleri silmez.
 
 ## Kontroller
 
@@ -112,12 +142,12 @@ olarak da çıkar.
 ## Proje yapısı
 
 ```
-app.py                 Arayüz (customtkinter)
+app.py                 Arayüz (customtkinter), sütun eşleme penceresi
 denetim/firms.py       Firma kayıt defteri (firma başına veritabanı, son firma, eski audit_data.db aktarımı)
 denetim/database.py    SQLite şeması, kayıt/okuma, eski sürüm taşıma
 denetim/export.py      Çok sayfalı Excel rapor çıktısı
 denetim/ubl.py         UBL-TR XML ayrıştırıcı
-denetim/importers.py   Excel/XML doğrulama ve satır bazlı hata raporu, şablonlar
+denetim/importers.py   Excel/XML doğrulama, başlık satırı tespiti, sütun eşleme, satır bazlı hata raporu, şablonlar
 denetim/checks.py      Fiyat analizi, mutabakat ve tüm denetim kontrolleri
 denetim/utils.py       Sayı/tarih/metin/birim normalizasyonu
 tests/                 Birim testleri ve örnek XML

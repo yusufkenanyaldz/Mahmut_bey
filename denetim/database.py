@@ -163,6 +163,21 @@ class DatabaseManager:
         with self.connection() as conn:
             conn.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)", (key, str(value)))
 
+    # ------------------------------------------------------------------ sütun eşlemeleri
+    # Onaylanan eşlemeler ayarlar tablosunda "sutun_esleme:<TÜR>:<başlık imzası>" anahtarıyla JSON olarak saklanır.
+    def get_column_mappings(self, kind):
+        """Kayıtlı eşlemelerin JSON metinleri (en son kaydedilen önce)."""
+        with self.connection() as conn:
+            rows = conn.execute("SELECT value FROM settings WHERE key LIKE ? ORDER BY rowid DESC",
+                                (f"sutun_esleme:{kind}:%",)).fetchall()
+        return [r[0] for r in rows]
+
+    def save_column_mapping(self, kind, signature, mapping_json):
+        with self.connection() as conn:
+            key = f"sutun_esleme:{kind}:{signature}"
+            conn.execute("DELETE FROM settings WHERE key = ?", (key,))  # Yeniden kayıt en yeni sayılsın
+            conn.execute("INSERT INTO settings(key, value) VALUES (?, ?)", (key, mapping_json))
+
     # ------------------------------------------------------------------ dosya takibi
     def find_import(self, kind, file_hash):
         with self.connection() as conn:

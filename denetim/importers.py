@@ -1,41 +1,75 @@
 """Excel ve XML dosyalarını doğrulayıp veritabanına yazılacak yapılara çevirir."""
 import hashlib
 import io
+import json
 import os
+import re
 import zipfile
 from dataclasses import dataclass, field
 
 import pandas as pd
 
 from .ubl import UBLParseError, parse_ubl
-from .utils import map_columns, normalize_doc_no, normalize_vkn, parse_date, parse_number
+from .utils import (column_key, match_columns, normalize_doc_no, normalize_vkn, parse_date,
+                    parse_number)
 
 INVOICE_SCHEMA = {
-    "Fatura_No": ["Fatura Numarası", "Fatura Numarasi"],
-    "Tarih": ["Fatura_Tarihi", "Fatura Tarihi"],
-    "Tedarikci_VKN": ["Tedarikçi VKN", "VKN", "TCKN", "VKN_TCKN", "Satici_VKN"],
-    "Tedarikci_Ad": ["Tedarikçi", "Tedarikci", "Tedarikçi Adı", "Unvan", "Satici"],
-    "Urun_Adi": ["Ürün Adı", "Urun", "Ürün", "Mal_Hizmet"],
-    "Miktar": [],
-    "Birim": ["Olcu_Birimi", "Ölçü Birimi"],
-    "Fiyat": ["Birim_Fiyat", "Birim Fiyat"],
-    "Iskonto": ["Iskonto_Tutari", "İskonto Tutarı"],
-    "KDV_Orani": ["KDV", "KDV Oranı"],
-    "Para_Birimi": ["Doviz", "Döviz"],
-    "Kur": ["Doviz_Kuru", "Döviz Kuru"],
+    "Fatura_No": ["Fatura Numarası", "Fatura Numarasi", "Fatura No", "Fatura Nosu", "Fatura Seri No",
+                  "Belge No", "Belge Numarası", "Evrak No", "Evrak Numarası"],
+    "Tarih": ["Fatura_Tarihi", "Fatura Tarihi", "Belge Tarihi", "Evrak Tarihi", "Düzenleme Tarihi"],
+    "Tedarikci_VKN": ["Tedarikçi VKN", "VKN", "TCKN", "VKN_TCKN", "VKN/TCKN", "Satici_VKN", "Satıcı VKN/TCKN",
+                      "Gönderici VKN", "Gönderici VKN/TCKN", "Vergi No", "Vergi Numarası", "Vergi Kimlik No"],
+    "Tedarikci_Ad": ["Tedarikçi", "Tedarikci", "Tedarikçi Adı", "Tedarikçi Unvanı", "Unvan", "Unvanı", "Satici",
+                     "Satıcı Unvanı", "Satıcı Adı", "Gönderici", "Gönderici Unvanı", "Firma Adı", "Firma Unvanı"],
+    "Urun_Adi": ["Ürün Adı", "Urun", "Ürün", "Mal_Hizmet", "Mal/Hizmet", "Mal Hizmet Adı", "Mal/Hizmet Adı",
+                 "Ürün/Hizmet", "Ürün/Hizmet Adı", "Stok Adı", "Malzeme Adı", "Hizmet Adı"],
+    "Miktar": ["Miktarı", "Adet"],
+    "Birim": ["Olcu_Birimi", "Ölçü Birimi", "Birimi", "Miktar Birimi"],
+    "Fiyat": ["Birim_Fiyat", "Birim Fiyat", "Birim Fiyatı", "B.Fiyat", "Birim Fiyat TL", "Fiyatı"],
+    "Iskonto": ["Iskonto_Tutari", "İskonto Tutarı", "İskonto TL", "İndirim Tutarı"],
+    "KDV_Orani": ["KDV", "KDV Oranı", "KDV %", "KDV Yüzdesi"],
+    "Para_Birimi": ["Doviz", "Döviz", "Para Birimi", "Döviz Cinsi", "Döviz Türü"],
+    "Kur": ["Doviz_Kuru", "Döviz Kuru", "Kuru"],
 }
 INVOICE_REQUIRED = ["Fatura_No", "Tarih", "Tedarikci_VKN", "Tedarikci_Ad", "Urun_Adi", "Miktar", "Fiyat"]
 
+# "Fiş No" / "Yevmiye No" bilerek takma ad değildir: fiş/madde sıra numarasıdır, belge (fatura) numarası değil.
 JOURNAL_SCHEMA = {
-    "Tarih": ["Yevmiye_Tarihi", "Fis_Tarihi", "Fiş Tarihi"],
-    "Belge_No": ["Belge No", "Evrak_No", "Evrak No", "Fatura_No"],
-    "Hesap_Kodu": ["Hesap Kodu", "Hesap", "Hesap_No"],
-    "Tutar": [],
-    "Borc": ["Borç"],
-    "Alacak": [],
-    "Aciklama": ["Açıklama"],
+    "Tarih": ["Yevmiye_Tarihi", "Yevmiye Tarihi", "Fis_Tarihi", "Fiş Tarihi", "Kayıt Tarihi", "İşlem Tarihi",
+              "Evrak Tarihi", "Belge Tarihi", "Fiş Tar."],
+    "Belge_No": ["Belge No", "Belge Numarası", "Belge Nosu", "Belge Seri No", "Belge Seri Sıra No", "Evrak_No",
+                 "Evrak No", "Evrak Numarası", "Evrak Nosu", "Fatura_No", "Fatura No", "Fatura Numarası"],
+    "Hesap_Kodu": ["Hesap Kodu", "Hesap", "Hesap_No", "Hesap No", "Hesap Numarası", "Hesap Kod", "Hes. Kodu",
+                   "Muhasebe Hesabı", "Muhasebe Hesap Kodu", "Hesap Plan Kodu"],
+    "Tutar": ["Tutar TL", "Tutarı", "İşlem Tutarı"],
+    "Borc": ["Borç", "Borç Tutarı", "Borç Tutar", "Borç TL", "Borç (TL)", "Borçlu Tutar", "Borç Tutarı TL"],
+    "Alacak": ["Alacak Tutarı", "Alacak Tutar", "Alacak TL", "Alacak (TL)", "Alacaklı Tutar", "Alacak Tutarı TL"],
+    "Aciklama": ["Açıklama", "Açıklaması", "Fiş Açıklaması", "Satır Açıklaması", "Madde Açıklaması",
+                 "Detay Açıklama"],
 }
 JOURNAL_REQUIRED = ["Tarih", "Belge_No", "Hesap_Kodu"]
+JOURNAL_AMOUNT = ["Tutar", "Borc", "Alacak"]
+
+# Arayüzde gösterilen alan adları
+FIELD_LABELS = {
+    "Tarih": "Tarih", "Belge_No": "Belge No", "Hesap_Kodu": "Hesap Kodu", "Borc": "Borç", "Alacak": "Alacak",
+    "Tutar": "Tutar (Borç − Alacak yerine)", "Aciklama": "Açıklama", "Fatura_No": "Fatura No",
+    "Tedarikci_VKN": "Tedarikçi VKN/TCKN", "Tedarikci_Ad": "Tedarikçi Adı", "Urun_Adi": "Ürün Adı",
+    "Miktar": "Miktar", "Birim": "Birim", "Fiyat": "Birim Fiyat (KDV hariç)", "Iskonto": "İskonto",
+    "KDV_Orani": "KDV Oranı", "Para_Birimi": "Para Birimi", "Kur": "Kur",
+}
+# Eşleme türleri: (şema, zorunlu alanlar). Kayıtlı eşlemeler bu anahtarlarla saklanır.
+KIND_YEVMIYE, KIND_FATURA = "YEVMIYE", "FATURA"
+SCHEMAS = {KIND_YEVMIYE: JOURNAL_SCHEMA, KIND_FATURA: INVOICE_SCHEMA}
+
+HEADER_SCAN_ROWS = 20   # Başlık satırı aranırken taranan ilk satır sayısı
+PREVIEW_ROWS = 10       # Eşleme penceresindeki önizleme satırı sayısı
+BELGE_NO_HINT = ("Belge numarası ayrı bir sütunda bulunamadı. Program belge numarasını yalnızca ayrı bir sütundan "
+                 "okur; açıklama metninin içinden ayıklamaz. Lütfen muhasebe programından belge numarasının ayrı "
+                 "bir sütunda olduğu bir döküm alın (ör. döküme Evrak No / Belge No sütununu ekleyerek) ya da "
+                 "dosyada böyle bir sütun varsa 'Sütunları Eşle' ile seçin.")
+# Döküm sonundaki özet satırları: "Toplam", "Genel Toplam", "Ara Toplam", "Nakli Yekün", "Devreden" ...
+_SUMMARY_RE = re.compile(r"^(genel|ara|donem|sayfa|ay|hesap|fis|kumulatif)?(toplam|toplami|yekun)|^nakliyekun|^devreden")
 
 
 @dataclass
@@ -43,6 +77,54 @@ class ImportResult:
     items: list = field(default_factory=list)
     errors: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
+    infos: list = field(default_factory=list)       # Bilgi: atlanan başlık/özet satırları, kullanılan eşleme
+    missing: list = field(default_factory=list)     # Bulunamayan zorunlu alanlar (doluysa eşleme gerekir)
+    layout: "TableLayout" = None                    # Dosyanın algılanan düzeni (eşleme penceresi için)
+    mapping: "ColumnMapping" = None                 # Yüklemede kullanılan eşleme
+
+    @property
+    def needs_mapping(self):
+        return bool(self.missing)
+
+
+@dataclass
+class ColumnMapping:
+    """Dosya sütunlarının standart alanlara eşlemesi.
+
+    header_row: başlık satırı (0 tabanlı; Excel satır no = header_row + 1)
+    columns: {standart_alan: dosyadaki sütun adı}
+    """
+    header_row: int
+    columns: dict
+    signature: str = ""
+    saved: bool = False  # Firmanın kayıtlı eşlemesinden mi geldi
+
+    def to_json(self):
+        return json.dumps({"header_row": self.header_row, "columns": self.columns, "signature": self.signature},
+                          ensure_ascii=False)
+
+    @classmethod
+    def from_json(cls, text, saved=True):
+        d = json.loads(text)
+        return cls(int(d["header_row"]), dict(d["columns"]), d.get("signature", ""), saved)
+
+
+@dataclass
+class TableLayout:
+    """Excel sayfasının ham hali, başlık satırı ve otomatik sütun eşlemesi."""
+    raw: pd.DataFrame
+    header_row: int
+    columns: list           # Başlık satırındaki sütun adları (boşlar "Sütun C" gibi adlandırılır)
+    mapping: dict           # Otomatik eşleme {standart_alan: sütun adı}
+    signature: str
+
+    def preview(self, n=PREVIEW_ROWS):
+        """Başlık satırının altındaki ilk n dolu satır (sütun adlarıyla)."""
+        body = self.raw.iloc[self.header_row + 1:]
+        body = body[~body.apply(lambda r: all(_is_blank(v) for v in r), axis=1)].head(n).copy()
+        body.columns = self.columns
+        body.index = [_excel_row(i) for i in body.index]
+        return body.apply(lambda col: col.map(_preview_text))
 
 
 def file_hash(data):
@@ -50,28 +132,239 @@ def file_hash(data):
 
 
 def _excel_row(idx):
-    """DataFrame indeksini Excel satır numarasına çevirir (başlık 1. satır)."""
-    return int(idx) + 2
+    """Ham (başlıksız okunmuş) sayfanın satır indeksini Excel satır numarasına çevirir."""
+    return int(idx) + 1
 
 
 def _is_blank(value):
     return value is None or (isinstance(value, float) and pd.isna(value)) or str(value).strip() == ""
 
 
-def _read_excel(data):
-    return pd.read_excel(io.BytesIO(data), dtype=object)
+def _cell_text(value):
+    if _is_blank(value):
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return str(value).strip()
+
+
+def _preview_text(value):
+    if hasattr(value, "strftime") and not _is_blank(value) and not pd.isna(value):
+        return value.strftime("%d.%m.%Y")
+    return _cell_text(value)
+
+
+def _col_letter(i):
+    letters = ""
+    i += 1
+    while i:
+        i, r = divmod(i - 1, 26)
+        letters = chr(65 + r) + letters
+    return letters
+
+
+def read_raw_excel(data):
+    """İlk sayfayı başlıksız okur: satır indeksi + 1 = Excel satır numarası."""
+    raw = pd.read_excel(io.BytesIO(data), header=None, dtype=object)
+    raw.columns = range(raw.shape[1])
+    return raw
+
+
+def header_columns(raw, header_row):
+    """Başlık satırındaki hücrelerden benzersiz sütun adları üretir."""
+    names, seen = [], {}
+    values = raw.iloc[header_row].tolist() if 0 <= header_row < len(raw) else [None] * raw.shape[1]
+    for j, value in enumerate(values):
+        name = _cell_text(value) or f"Sütun {_col_letter(j)}"
+        if name in seen:
+            seen[name] += 1
+            name = f"{name} ({seen[name]})"
+        else:
+            seen[name] = 1
+        names.append(name)
+    return names
+
+
+def row_signature(raw, header_row):
+    """Başlık satırının imzası: dolu hücrelerin normalize adları (sıralı). Aynı biçimdeki dosyalar aynı imzayı verir."""
+    if not 0 <= header_row < len(raw):
+        return ""
+    keys = [column_key(_cell_text(v)) for v in raw.iloc[header_row].tolist() if _cell_text(v)]
+    return hashlib.sha1("|".join(keys).encode("utf-8")).hexdigest()[:16]
+
+
+def detect_header_row(raw, schema, max_rows=HEADER_SCAN_ROWS):
+    """İlk max_rows satır içinde bilinen sütun adlarıyla en çok eşleşen satırı başlık kabul eder.
+
+    Eşitlikte (hiç eşleşme yoksa da) en çok metin hücresi olan satır, o da eşitse üstteki satır seçilir; böylece
+    tek hücreli firma adı / rapor başlığı satırları başlık sanılmaz.
+    """
+    best, best_score = 0, None
+    for i in range(min(max_rows, len(raw))):
+        values = raw.iloc[i].tolist()
+        cells = [_cell_text(v) for v in values]
+        if not any(cells):
+            continue
+        texts = sum(1 for v in values if isinstance(v, str) and v.strip())
+        score = (len(match_columns([c for c in cells if c], schema)), texts)
+        if best_score is None or score > best_score:
+            best, best_score = i, score
+    return best
+
+
+def analyze_layout(data, schema, header_row=None):
+    """Dosyanın düzenini çıkarır: başlık satırı (verilmezse otomatik), sütun adları, otomatik eşleme, imza."""
+    raw = data if isinstance(data, pd.DataFrame) else read_raw_excel(data)
+    if header_row is None:
+        header_row = detect_header_row(raw, schema)
+    columns = header_columns(raw, header_row)
+    real = [c for c, v in zip(columns, raw.iloc[header_row].tolist() if header_row < len(raw) else [])
+            if _cell_text(v)]
+    return TableLayout(raw, header_row, columns, match_columns(real, schema), row_signature(raw, header_row))
+
+
+def find_saved_mapping(raw, saved_mappings):
+    """Kayıtlı eşlemelerden bu dosyanın başlık imzasına uyan ilkini döndürür (yoksa None).
+
+    saved_mappings: [ColumnMapping, ...] (en yeni önce). İmza, eşlemenin kendi başlık satırında kontrol edilir;
+    böylece başlık satırı elle seçilmiş eşlemeler de tanınır.
+    """
+    for m in saved_mappings or []:
+        if m.signature and row_signature(raw, m.header_row) == m.signature:
+            columns = header_columns(raw, m.header_row)
+            if all(c in columns for c in m.columns.values()):
+                return ColumnMapping(m.header_row, dict(m.columns), m.signature, saved=True)
+    return None
+
+
+def missing_fields(columns_map, kind):
+    """Eşlemede eksik zorunlu alanlar."""
+    if kind == KIND_YEVMIYE:
+        missing = [c for c in JOURNAL_REQUIRED if c not in columns_map]
+        if not any(c in columns_map for c in JOURNAL_AMOUNT):
+            missing.append("Tutar (veya Borc/Alacak)")
+        return missing
+    return [c for c in INVOICE_REQUIRED if c not in columns_map]
+
+
+def missing_message(missing, kind):
+    msg = f"Eksik sütun(lar): {', '.join(missing)}."
+    if kind == KIND_FATURA:
+        msg += f" Gerekli: {', '.join(INVOICE_REQUIRED)}."
+    if kind == KIND_YEVMIYE and missing == ["Belge_No"]:
+        return msg + " " + BELGE_NO_HINT
+    return msg + " Dosyadaki sütun adları farklıysa 'Sütunları Eşle' ile eşleyebilirsiniz."
+
+
+def validate_mapping(columns_map, kind):
+    """Eşleme penceresinden gelen eşlemeyi doğrular. Dönüş: hata mesajları listesi (boşsa geçerli)."""
+    errors = []
+    missing = missing_fields(columns_map, kind)
+    if missing:
+        errors.append(missing_message(missing, kind))
+    used = {}
+    for std, col in columns_map.items():
+        if col in used:
+            errors.append(f"'{col}' sütunu hem {FIELD_LABELS.get(used[col], used[col])} hem "
+                          f"{FIELD_LABELS.get(std, std)} için seçilmiş; her sütun tek alana eşlenebilir.")
+        used[col] = std
+    return errors
+
+
+def _summary_label(cells):
+    for text in cells:
+        if text and _SUMMARY_RE.match(column_key(text)):
+            return text
+    return None
+
+
+def _load_table(data, kind, mapping=None, saved_mappings=None):
+    """Excel'i başlık tespiti + eşleme ile standart sütunlu bir tabloya çevirir.
+
+    Dönüş: (df ya da None, ImportResult). df'nin indeksi ham satır indeksidir (Excel satırı = indeks + 1);
+    üstteki başlık satırları, boş satırlar, tekrarlanan başlıklar ve özet (Toplam) satırları çıkarılmıştır.
+    """
+    schema = SCHEMAS[kind]
+    result = ImportResult()
+    raw = data if isinstance(data, pd.DataFrame) else read_raw_excel(data)
+    if mapping is None and saved_mappings:
+        mapping = find_saved_mapping(raw, saved_mappings)
+    layout = analyze_layout(raw, schema, None if mapping is None else mapping.header_row)
+    if mapping is None:
+        mapping = ColumnMapping(layout.header_row, dict(layout.mapping), layout.signature)
+    elif not mapping.signature:
+        mapping.signature = layout.signature
+    result.layout, result.mapping = layout, mapping
+
+    unknown = [c for c in mapping.columns.values() if c not in layout.columns]
+    if unknown:
+        result.errors.append(f"Eşlemedeki sütun(lar) dosyada yok: {', '.join(unknown)}")
+        result.missing = [s for s, c in mapping.columns.items() if c in unknown]
+        return None, result
+    result.missing = missing_fields(mapping.columns, kind)
+    if result.missing:
+        result.errors.append(missing_message(result.missing, kind))
+        return None, result
+
+    if mapping.saved:
+        result.infos.append("Kayıtlı eşleme kullanıldı (firmanın aynı sütun başlıklı dosyası için daha önce "
+                            "onaylanan eşleme)")
+    if mapping.header_row > 0:
+        result.infos.append(f"Sütun başlıkları {_excel_row(mapping.header_row)}. satırda bulundu; üstteki "
+                            f"{mapping.header_row} satır (firma adı / rapor başlığı / boş satır) atlandı")
+    renamed = [f"{c} → {s}" for s, c in mapping.columns.items() if c != s]
+    if renamed:
+        result.infos.append("Sütun eşlemesi: " + ", ".join(renamed))
+
+    body = raw.iloc[mapping.header_row + 1:]
+    pos = {c: j for j, c in enumerate(layout.columns)}
+    date_col = pos[mapping.columns["Tarih"]]
+    keep, summary, repeated = [], [], []
+    for idx, values in zip(body.index, body.itertuples(index=False, name=None)):
+        cells = [_cell_text(v) for v in values]
+        if not any(cells):
+            continue
+        if all(column_key(cells[pos[c]]) == column_key(c) for c in mapping.columns.values()):
+            repeated.append(_excel_row(idx))
+            continue
+        label = _summary_label(cells)
+        if label is not None:
+            try:
+                parse_date(values[date_col])
+            except ValueError:
+                summary.append(f"{_excel_row(idx)} ({label})")
+                continue
+        keep.append(idx)
+    if summary:
+        result.infos.append(f"Özet satırı veri sayılmadı: satır {', '.join(summary)}")
+    if repeated:
+        result.infos.append(f"Tekrarlanan başlık satırı atlandı: satır {', '.join(map(str, repeated))}")
+    df = pd.DataFrame({std: body.loc[keep, pos[col]] for std, col in mapping.columns.items()}, index=keep)
+    return df, result
+
+
+def parse_saved_mappings(items):
+    """Ayar tablosundan gelen JSON metinlerini ColumnMapping listesine çevirir (bozuk kayıtlar atlanır)."""
+    out = []
+    for text in items:
+        try:
+            out.append(ColumnMapping.from_json(text))
+        except (ValueError, KeyError, TypeError):
+            continue
+    return out
 
 
 # ---------------------------------------------------------------------- fatura excel
-def read_invoice_excel(data, source_file=None):
-    """Fatura Excel'ini okur. Aynı Fatura_No + VKN'ye sahip satırlar tek faturanın kalemleri sayılır."""
-    result = ImportResult()
-    df = _read_excel(data)
-    df, found = map_columns(df, INVOICE_SCHEMA)
-    missing = [c for c in INVOICE_REQUIRED if c not in found]
-    if missing:
-        result.errors.append(f"Eksik sütun(lar): {', '.join(missing)}. Gerekli: {', '.join(INVOICE_REQUIRED)}")
+def read_invoice_excel(data, source_file=None, mapping=None, saved_mappings=None):
+    """Fatura Excel'ini okur. Aynı Fatura_No + VKN'ye sahip satırlar tek faturanın kalemleri sayılır.
+
+    data: dosya içeriği (bytes) ya da read_raw_excel çıktısı. mapping: ColumnMapping (verilmezse başlık satırı ve
+    sütunlar otomatik bulunur). saved_mappings: firmanın kayıtlı eşlemeleri; dosyanın imzası uyuyorsa kullanılır.
+    """
+    df, result = _load_table(data, KIND_FATURA, mapping, saved_mappings)
+    if df is None:
         return result
+    found = set(df.columns)
 
     groups = {}  # (vkn, no_norm) -> {"header": ..., "lines": [...], "rows": [...], "bad": bool}
     order = []
@@ -190,17 +483,15 @@ def read_invoice_excel(data, source_file=None):
 
 
 # ---------------------------------------------------------------------- yevmiye excel
-def read_journal_excel(data):
-    result = ImportResult()
-    df = _read_excel(data)
-    df, found = map_columns(df, JOURNAL_SCHEMA)
-    missing = [c for c in JOURNAL_REQUIRED if c not in found]
-    has_amount = "Tutar" in found or "Borc" in found or "Alacak" in found
-    if missing or not has_amount:
-        if not has_amount:
-            missing.append("Tutar (veya Borc/Alacak)")
-        result.errors.append(f"Eksik sütun(lar): {', '.join(missing)}")
+def read_journal_excel(data, mapping=None, saved_mappings=None):
+    """Yevmiye Excel'ini okur. Parametreler read_invoice_excel ile aynıdır.
+
+    Belge numarası mutlaka ayrı bir sütunda olmalıdır; açıklama metninden belge no ayıklanmaz.
+    """
+    df, result = _load_table(data, KIND_YEVMIYE, mapping, saved_mappings)
+    if df is None:
         return result
+    found = set(df.columns)
     use_debit_credit = "Borc" in found or "Alacak" in found
     if use_debit_credit and "Tutar" in found:
         result.warnings.append("Hem Tutar hem Borç/Alacak sütunu var; Borç - Alacak kullanıldı")

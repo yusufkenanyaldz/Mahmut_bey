@@ -42,6 +42,111 @@ def requires_firm(method):
     return wrapper
 
 
+class ColumnMappingDialog(ctk.CTkToplevel):
+    """Sütun eşleme sihirbazı: başlık satırı, önizleme ve her standart alan için dosya sütunu seçimi.
+
+    Pencere kapandığında self.result onaylanan importers.ColumnMapping'dir (iptalde None).
+    """
+    NONE = "— (yok) —"
+
+    def __init__(self, master, kind, raw, initial, file_name, message=""):
+        super().__init__(master)
+        self.kind, self.raw = kind, raw
+        self.schema = importers.SCHEMAS[kind]
+        self.required = importers.JOURNAL_REQUIRED if kind == importers.KIND_YEVMIYE else importers.INVOICE_REQUIRED
+        self.result = None
+        self.title(f"Sütunları Eşle — {file_name}")
+        self.geometry("1000x720")
+        font = ctk.CTkFont(family="Segoe UI", size=13)
+        mono = ctk.CTkFont(family="Consolas", size=12)
+
+        intro = ("Dosyadaki her sütunun hangi alana karşılık geldiğini seçin. * işaretli alanlar zorunludur.")
+        if kind == importers.KIND_YEVMIYE:
+            intro += ("\nTutar için Borç ve/veya Alacak ya da tek bir Tutar sütunu seçin. Belge No ayrı bir sütun "
+                      "olmalıdır; açıklama sütununu Belge No olarak seçmeyin.")
+        if message:
+            intro = message + "\n\n" + intro
+        ctk.CTkLabel(self, text=intro, font=font, justify="left", anchor="w", wraplength=950).pack(
+            fill="x", padx=20, pady=(16, 8))
+
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=20)
+        ctk.CTkLabel(top, text="Başlık satırı (Excel satır no):", font=font).pack(side="left", padx=(0, 6))
+        n_rows = max(1, min(importers.HEADER_SCAN_ROWS, len(raw)))
+        self.header_var = ctk.StringVar(value=str(initial.header_row + 1))
+        ctk.CTkOptionMenu(top, values=[str(i + 1) for i in range(n_rows)], variable=self.header_var, width=80,
+                          command=self.on_header_change).pack(side="left")
+        ctk.CTkLabel(self, text=f"Önizleme (başlığın altındaki ilk {importers.PREVIEW_ROWS} satır):", font=font,
+                     anchor="w").pack(fill="x", padx=20, pady=(10, 2))
+        self.preview_box = ctk.CTkTextbox(self, font=mono, height=230, wrap="none")
+        self.preview_box.pack(fill="x", padx=20)
+
+        self.fields_frame = ctk.CTkFrame(self)
+        self.fields_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        self.vars, self.menus = {}, {}
+        for i, std in enumerate(self.fields()):
+            label = importers.FIELD_LABELS.get(std, std) + (" *" if std in self.required else "")
+            ctk.CTkLabel(self.fields_frame, text=label, font=font, anchor="w").grid(
+                row=i // 2, column=(i % 2) * 2, padx=(12, 6), pady=4, sticky="w")
+            self.vars[std] = ctk.StringVar(value=self.NONE)
+            self.menus[std] = ctk.CTkOptionMenu(self.fields_frame, values=[self.NONE], variable=self.vars[std],
+                                                width=260, dynamic_resizing=False)
+            self.menus[std].grid(row=i // 2, column=(i % 2) * 2 + 1, padx=(0, 24), pady=4, sticky="w")
+
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.pack(fill="x", padx=20, pady=(0, 16))
+        ctk.CTkButton(buttons, text="✔ Onayla ve Yükle", command=self.confirm).pack(side="left", padx=(0, 10))
+        ctk.CTkButton(buttons, text="İptal", command=self.destroy, fg_color=("gray55", "gray30"),
+                      hover_color=("gray45", "gray25")).pack(side="left")
+        self.refresh(initial.header_row, initial.columns)
+
+        self.transient(master)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.after(50, self._grab)
+
+    def _grab(self):
+        try:
+            self.grab_set()
+            self.focus_force()
+        except Exception:  # Pencere henüz görünür değilse modal olmadan devam edilir
+            pass
+
+    def fields(self):
+        if self.kind == importers.KIND_YEVMIYE:
+            return ["Tarih", "Belge_No", "Hesap_Kodu", "Borc", "Alacak", "Tutar", "Aciklama"]
+        return list(self.schema)
+
+    def refresh(self, header_row, columns_map):
+        self.layout = importers.analyze_layout(self.raw, self.schema, header_row)
+        preview = self.layout.preview()
+        self.preview_box.configure(state="normal")
+        self.preview_box.delete("1.0", "end")
+        text = preview.to_string(max_colwidth=28) if not preview.empty else "(başlığın altında veri yok)"
+        self.preview_box.insert("1.0", "Sütunlar: " + " | ".join(self.layout.columns) + "\n\n" + text)
+        self.preview_box.configure(state="disabled")
+        values = [self.NONE] + self.layout.columns
+        for std, menu in self.menus.items():
+            menu.configure(values=values)
+            col = columns_map.get(std)
+            self.vars[std].set(col if col in self.layout.columns else self.NONE)
+
+    def on_header_change(self, value):
+        header_row = int(value) - 1
+        self.refresh(header_row, importers.analyze_layout(self.raw, self.schema, header_row).mapping)
+
+    def selected(self):
+        return {std: var.get() for std, var in self.vars.items() if var.get() != self.NONE}
+
+    def confirm(self):
+        columns = self.selected()
+        errors = importers.validate_mapping(columns, self.kind)
+        if errors:
+            messagebox.showwarning("Eşleme Tamamlanmadı", "\n\n".join(errors), parent=self)
+            return
+        self.result = importers.ColumnMapping(self.layout.header_row, columns, self.layout.signature)
+        self.destroy()
+
+
 # --- ARAYÜZ (GUI) - AYDINLIK/KARANLIK MOD DESTEKLİ ---
 class AuditApp(ctk.CTk):
     def __init__(self, data_dir=DATA_DIR, legacy_dirs=None):
@@ -321,6 +426,51 @@ class AuditApp(ctk.CTk):
             except Exception as e:
                 messagebox.showerror("Hata", f"Şablon kaydedilemedi:\n{e}")
 
+    def ask_column_mapping(self, kind, raw, res, file_name, message=""):
+        """Eşleme penceresini açar ve kullanıcı kapatana kadar bekler. Dönüş: ColumnMapping ya da None."""
+        dialog = ColumnMappingDialog(self, kind, raw, res.mapping, file_name, message)
+        self.wait_window(dialog)
+        return dialog.result
+
+    def read_excel_with_mapping(self, box, kind, reader, data, file_name, force_wizard=False):
+        """Excel'i firmanın kayıtlı eşlemesi / otomatik tespit ile okur; gerekirse eşleme penceresini açar.
+
+        Onaylanan eşleme firmanın veritabanına dosyanın başlık imzasıyla kaydedilir. Kullanıcı vazgeçerse None.
+        """
+        raw = importers.read_raw_excel(data)
+        saved = importers.parse_saved_mappings(self.db.get_column_mappings(kind))
+        res = reader(raw, saved_mappings=saved)
+        if not (force_wizard or res.needs_mapping):
+            return res
+        message = ""
+        if res.needs_mapping:
+            message = "Zorunlu sütunlar otomatik bulunamadı.\n" + "\n".join(res.errors)
+            self.log(box, "[UYARI] Zorunlu sütunlar otomatik bulunamadı; sütun eşleme penceresi açıldı.", "uyari")
+        mapping = self.ask_column_mapping(kind, raw, res, file_name, message)
+        if mapping is None:
+            if res.needs_mapping:  # Eksik sütun hatası (belge no ayrı sütun açıklaması dahil) gösterilir
+                self.log(box, "[YÜKLENMEDİ] Zorunlu sütunlar eşlenmediği için dosya yüklenmedi.", "hata")
+                self.log_messages(box, res.errors, "hata")
+            else:
+                self.log(box, "[İPTAL] Sütun eşleme penceresi kapatıldı, dosya yüklenmedi.", "uyari")
+            return None
+        res = reader(raw, mapping=mapping)
+        if not res.needs_mapping:
+            self.db.save_column_mapping(kind, res.mapping.signature, res.mapping.to_json())
+            res.infos.append("Eşleme bu firma için kaydedildi; aynı biçimdeki dosyalarda sorulmadan uygulanacak")
+        return res
+
+    def log_import_result(self, box, res):
+        if res.infos:
+            self.log(box, f"\n[BİLGİ] ({len(res.infos)})", "baslik")
+            self.log_messages(box, res.infos, "baslik")
+        if res.errors:
+            self.log(box, f"\n[HATALAR] ({len(res.errors)})", "hata")
+            self.log_messages(box, res.errors, "hata")
+        if res.warnings:
+            self.log(box, f"\n[UYARILAR] ({len(res.warnings)})", "uyari")
+            self.log_messages(box, res.warnings, "uyari")
+
     def show_welcome_screen(self):
         if self.db is None:
             return self.show_no_firm_screen(welcome=True)
@@ -551,13 +701,15 @@ class AuditApp(ctk.CTk):
                            "Aynı Fatura_No + VKN'li satırlar tek faturanın kalemleri olarak kaydedilir.")
         row = self.create_button_row()
         self.add_button(row, "Excel Dosyası Seç", self.select_and_read_excel)
+        self.add_button(row, "🧭 Sütunları Eşle", lambda: self.select_and_read_excel(force_wizard=True),
+                        fg_color=("#2f7d4f", "#2a6b45"), hover_color=("#25633f", "#1f5034"))
         self.add_button(row, "📄 Boş Şablon İndir", lambda: self.save_template(importers.invoice_template(),
                                                                               "Fatura_Sablonu.xlsx"),
                         fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"))
         self.excel_log_box = self.create_console_box()
         self.log(self.excel_log_box, "> Sistem hazır. İşlem bekliyor...")
 
-    def select_and_read_excel(self):
+    def select_and_read_excel(self, force_wizard=False):
         file_path = filedialog.askopenfilename(title="Fatura Excel Seç", filetypes=[("Excel Dosyaları", "*.xlsx")])
         if not file_path:
             return
@@ -571,9 +723,12 @@ class AuditApp(ctk.CTk):
             if not self.confirm_reimport("FATURA_EXCEL", digest, name):
                 self.log(box, "[İPTAL] Dosya yüklenmedi.", "uyari")
                 return
-            res = importers.read_invoice_excel(data, source_file=name)
+            reader = functools.partial(importers.read_invoice_excel, source_file=name)
+            res = self.read_excel_with_mapping(box, importers.KIND_FATURA, reader, data, name, force_wizard)
         except Exception as e:
             self.log(box, f"[HATA] Dosya okunamadı: {e}", "hata")
+            return
+        if res is None:
             return
         added, dups = (self.db.save_invoices(res.items, "FATURA_EXCEL", name, digest) if res.items else (0, []))
         lines = sum(len(lns) for h, lns in res.items if h not in dups)
@@ -581,12 +736,7 @@ class AuditApp(ctk.CTk):
                       f"Hatalı satır: {len(res.errors)}", "ok" if not res.errors else "uyari")
         for h in dups:
             res.warnings.append(f"{h['invoice_no']} nolu fatura (VKN {h['supplier_vkn']}) zaten kayıtlı, atlandı")
-        if res.errors:
-            self.log(box, f"\n[HATALAR] ({len(res.errors)})", "hata")
-            self.log_messages(box, res.errors, "hata")
-        if res.warnings:
-            self.log(box, f"\n[UYARILAR] ({len(res.warnings)})", "uyari")
-            self.log_messages(box, res.warnings, "uyari")
+        self.log_import_result(box, res)
 
     # ------------------------------------------------------------------ YEVMİYE YÜKLEME
     @requires_firm
@@ -594,17 +744,22 @@ class AuditApp(ctk.CTk):
         self.clear_main_frame()
         self.create_header("Muhasebe Yevmiye Kayıtları Yükle",
                            "Zorunlu sütunlar: Tarih, Belge_No, Hesap_Kodu ve (Borc + Alacak) ya da Tutar.  "
-                           "İsteğe bağlı: Aciklama.  Borç/Alacak kullanılırsa tutar = Borç − Alacak olarak saklanır.")
+                           "İsteğe bağlı: Aciklama.  Borç/Alacak kullanılırsa tutar = Borç − Alacak olarak saklanır.\n"
+                           "Başlık satırı ve yaygın sütun adları (Evrak No, Borç Tutarı, Fiş Tarihi ...) otomatik "
+                           "bulunur; bulunamazsa sütun eşleme penceresi açılır ve eşleme firma için hatırlanır. "
+                           "Belge numarası ayrı bir sütunda olmalıdır (açıklamanın içinden okunmaz).")
         row = self.create_button_row()
         self.add_button(row, "Yevmiye Excel Seç", self.select_and_read_journal,
                         fg_color=("#d4a000", "#b58900"), hover_color=("#b58900", "#856500"))
+        self.add_button(row, "🧭 Sütunları Eşle", lambda: self.select_and_read_journal(force_wizard=True),
+                        fg_color=("#2f7d4f", "#2a6b45"), hover_color=("#25633f", "#1f5034"))
         self.add_button(row, "📄 Boş Şablon İndir", lambda: self.save_template(importers.journal_template(),
                                                                               "Yevmiye_Sablonu.xlsx"),
                         fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"))
         self.journal_log_box = self.create_console_box()
         self.log(self.journal_log_box, "> Sistem hazır. İşlem bekliyor...")
 
-    def select_and_read_journal(self):
+    def select_and_read_journal(self, force_wizard=False):
         file_path = filedialog.askopenfilename(title="Yevmiye Excel Seç", filetypes=[("Excel Dosyaları", "*.xlsx")])
         if not file_path:
             return
@@ -618,19 +773,17 @@ class AuditApp(ctk.CTk):
             if not self.confirm_reimport("YEVMIYE_EXCEL", digest, name):
                 self.log(box, "[İPTAL] Dosya yüklenmedi.", "uyari")
                 return
-            res = importers.read_journal_excel(data)
+            res = self.read_excel_with_mapping(box, importers.KIND_YEVMIYE, importers.read_journal_excel, data,
+                                               name, force_wizard)
         except Exception as e:
             self.log(box, f"[HATA] Dosya okunamadı: {e}", "hata")
+            return
+        if res is None:
             return
         saved = self.db.save_journal(res.items, name, digest) if res.items else 0
         self.log(box, f"[TAMAMLANDI] {saved} yevmiye satırı işlendi.  |  Hatalı satır: {len(res.errors)}",
                  "ok" if not res.errors else "uyari")
-        if res.errors:
-            self.log(box, f"\n[HATALAR] ({len(res.errors)})", "hata")
-            self.log_messages(box, res.errors, "hata")
-        if res.warnings:
-            self.log(box, f"\n[UYARILAR] ({len(res.warnings)})", "uyari")
-            self.log_messages(box, res.warnings, "uyari")
+        self.log_import_result(box, res)
 
     # ------------------------------------------------------------------ RİSK ANALİZİ
     @requires_firm
