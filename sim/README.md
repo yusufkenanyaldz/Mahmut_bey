@@ -5,6 +5,7 @@ Programın gerçekçi verilerde ne kadar hata yakaladığını ve ne kadar yanl�
 ```bash
 python sim/generate.py   # sim/firmalar/ altına 40 firmanın XML/Excel/yevmiye verisini ve hata listesini üretir
 python sim/metin.py      # her firmayı programın kodu ile denetler, sim/sonuclar.json ve sim/calisma/ raporlarını yazar
+                         # (firmalar programın firma kayıt defteriyle sim/calisma/veri/ altında açılır)
 ```
 
 - 5 sektör: İnşaat (8), Halı Üretimi (7), Uluslararası Taşımacılık (8), Otomotiv Satış ve Kiralama (8), Muhtelif İmalat (9)

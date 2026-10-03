@@ -1,5 +1,5 @@
+import functools
 import os
-import re
 from collections import OrderedDict
 
 import customtkinter as ctk
@@ -7,9 +7,14 @@ import pandas as pd
 from tkinter import filedialog, messagebox
 
 from denetim import checks, importers
-from denetim.database import DatabaseManager
-from denetim.utils import normalize_vkn, parse_account_list, parse_number, tr_upper
+from denetim.export import export_sections  # noqa: F401  (eski içe aktarımlar için app.export_sections korunur)
+from denetim.firms import FirmError, FirmRegistry
+from denetim.utils import parse_account_list, parse_number, tr_upper
 
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(APP_DIR, "veri")
+APP_TITLE = "Finansal Denetim ve Analiz Sistemi | SMMM Modülü"
+SECTORS = ["İnşaat", "Halı Üretimi", "Uluslararası Taşımacılık", "Otomotiv Satış ve Kiralama", "Muhtelif İmalat"]
 PERIOD_TYPES = ["Aylık", "Çeyreklik", "Yıllık"]
 MAX_LOG_LINES = 300
 
@@ -27,31 +32,29 @@ def df_to_text(df, max_rows=500):
     return text + "\n"
 
 
-def export_sections(file_path, sections):
-    """OrderedDict(başlık → DataFrame) yapısını çok sayfalı Excel'e yazar."""
-    used = set()
-    with pd.ExcelWriter(file_path) as writer:
-        for title, df in sections.items():
-            name = re.sub(r"[\[\]:*?/\\]", "", title)[:31] or "Sayfa"
-            base, n = name, 2
-            while name in used:
-                suffix = f" {n}"
-                name = base[:31 - len(suffix)] + suffix
-                n += 1
-            used.add(name)
-            df.to_excel(writer, sheet_name=name, index=False)
+def requires_firm(method):
+    """Ekranı yalnızca aktif firma varken açar; yoksa kullanıcıyı firma seçmeye yönlendirir."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        if self.db is None:
+            return self.show_no_firm_screen()
+        return method(self, *args, **kwargs)
+    return wrapper
 
 
 # --- ARAYÜZ (GUI) - AYDINLIK/KARANLIK MOD DESTEKLİ ---
 class AuditApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self, data_dir=DATA_DIR, legacy_dirs=None):
         super().__init__()
-        self.db = DatabaseManager()
+        self.registry = FirmRegistry(data_dir)
+        self.legacy_dirs = legacy_dirs if legacy_dirs is not None else list(dict.fromkeys([APP_DIR, os.getcwd()]))
+        self.firm = None
+        self.db = None
         self.analysis_df = None
         self.recon_sections = None
         self.audit_sections = None
 
-        self.title("Finansal Denetim ve Analiz Sistemi | SMMM Modülü")
+        self.title(APP_TITLE)
         self.geometry("1280x800")
 
         ctk.set_appearance_mode("Dark")
@@ -68,6 +71,64 @@ class AuditApp(ctk.CTk):
 
         self.create_sidebar()
         self.create_main_frame()
+        self.startup()
+
+    # ------------------------------------------------------------------ firma yönetimi
+    def startup(self):
+        """Eski tek veritabanını (varsa) aktarır, son seçilen firmayı açar."""
+        legacy = self.registry.find_legacy_db(*self.legacy_dirs)
+        if self.registry.legacy_pending(legacy):
+            old_title, _ = self.registry.read_legacy_company(legacy)
+            title = old_title or self.ask_legacy_title()
+            try:
+                firm = self.registry.import_legacy(legacy, title=title)
+                self.registry.set_last_firm(firm.code)
+                messagebox.showinfo("Veri Aktarımı",
+                                    f"Önceki sürümün veritabanı '{firm.title}' adlı firma olarak aktarıldı.\n\n"
+                                    f"Firma bilgilerini 'Firmalar' ekranından düzenleyebilirsiniz.\n"
+                                    f"Eski dosya silinmedi: {legacy}")
+            except Exception as e:
+                messagebox.showerror("Hata", f"Önceki sürümün veritabanı aktarılamadı:\n{e}")
+        last = self.registry.get_last_firm()
+        if last:
+            self.select_firm(last.code)
+        else:
+            self.show_welcome_screen()
+
+    def ask_legacy_title(self):
+        dialog = ctk.CTkInputDialog(title="Önceki Verilerin Aktarımı",
+                                    text="Önceki sürümde kayıtlı veriler bulundu ve bir firma olarak aktarılacak.\n"
+                                         "Bu verilerin ait olduğu firmanın unvanını girin\n"
+                                         "(boş bırakırsanız 'Aktarılan Firma' adı kullanılır):")
+        return (dialog.get_input() or "").strip()
+
+    def select_firm(self, code):
+        try:
+            db = self.registry.open_db(code)
+        except Exception as e:
+            messagebox.showerror("Hata", f"Firma veritabanı açılamadı:\n{e}")
+            return
+        self.firm, self.db = self.registry.get(code), db
+        self.registry.set_last_firm(self.firm.code)
+        self.analysis_df = self.recon_sections = self.audit_sections = None
+        self.refresh_firm_display()
+        self.show_welcome_screen()
+
+    def close_firm(self):
+        self.firm = self.db = None
+        self.analysis_df = self.recon_sections = self.audit_sections = None
+        self.refresh_firm_display()
+
+    def refresh_firm_display(self):
+        if self.firm:
+            self.title(f"{APP_TITLE} | {self.firm.title}")
+            vkn = f"VKN: {self.firm.vkn}" if self.firm.vkn else "VKN girilmedi"
+            self.firm_name_label.configure(text=self.firm.title, text_color=("black", "white"))
+            self.firm_info_label.configure(text=f"{self.firm.code}  •  {vkn}")
+        else:
+            self.title(APP_TITLE)
+            self.firm_name_label.configure(text="Firma seçilmedi", text_color=("#b58900", "#d4a000"))
+            self.firm_info_label.configure(text="Çalışmak için bir firma seçin")
 
     # ------------------------------------------------------------------ ayar yardımcıları
     def setting(self, key, default=""):
@@ -107,13 +168,29 @@ class AuditApp(ctk.CTk):
     def create_sidebar(self):
         self.sidebar = ctk.CTkFrame(self, width=250, corner_radius=0, fg_color=("gray85", "#1e1e21"))
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(9, weight=1)
+        self.sidebar.grid_rowconfigure(10, weight=1)
 
         logo_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         logo_frame.grid(row=0, column=0, padx=20, pady=(30, 20), sticky="ew")
         ctk.CTkLabel(logo_frame, text="DENETİM", font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
                      text_color=("#1f538d", "#3a7ebf")).pack()
         ctk.CTkLabel(logo_frame, text="Masaüstü Analiz Sistemi", font=ctk.CTkFont(family="Segoe UI", size=12)).pack()
+
+        firm_frame = ctk.CTkFrame(self.sidebar, corner_radius=8, fg_color=("gray78", "#2a2a2e"))
+        firm_frame.grid(row=1, column=0, padx=20, pady=(0, 14), sticky="ew")
+        ctk.CTkLabel(firm_frame, text="AKTİF FİRMA", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+                     text_color=("gray35", "gray60"), anchor="w").pack(fill="x", padx=12, pady=(8, 0))
+        self.firm_name_label = ctk.CTkLabel(firm_frame, text="", font=ctk.CTkFont(family="Segoe UI", size=14,
+                                                                                    weight="bold"),
+                                            anchor="w", justify="left", wraplength=190)
+        self.firm_name_label.pack(fill="x", padx=12)
+        self.firm_info_label = ctk.CTkLabel(firm_frame, text="", font=ctk.CTkFont(family="Segoe UI", size=11),
+                                            text_color=("gray30", "gray65"), anchor="w", justify="left",
+                                            wraplength=190)
+        self.firm_info_label.pack(fill="x", padx=12)
+        ctk.CTkButton(firm_frame, text="🏢  Firma Seç / Yönet", command=self.show_firms_frame, height=30,
+                      font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold")) \
+            .pack(fill="x", padx=12, pady=(6, 10))
 
         def create_nav_button(row, text, command, fg_color=None, hover_color=None):
             btn = ctk.CTkButton(self.sidebar, text=text, command=command, font=self.font_btn,
@@ -126,26 +203,26 @@ class AuditApp(ctk.CTk):
             btn.grid(row=row, column=0, padx=20, pady=6, sticky="ew")
             return btn
 
-        create_nav_button(1, "📂  UBL-TR (XML) Yükle", self.show_import_frame)
-        create_nav_button(2, "📊  Fatura (Excel) Yükle", self.show_excel_import_frame)
-        create_nav_button(3, "📒  Yevmiye (Excel) Yükle", self.show_journal_import_frame,
+        create_nav_button(2, "📂  UBL-TR (XML) Yükle", self.show_import_frame)
+        create_nav_button(3, "📊  Fatura (Excel) Yükle", self.show_excel_import_frame)
+        create_nav_button(4, "📒  Yevmiye (Excel) Yükle", self.show_journal_import_frame,
                           fg_color=("#d4a000", "#b58900"), hover_color=("#b58900", "#856500"))
-        create_nav_button(4, "🔍  Fiyat Risk Analizi", self.show_analysis_frame,
+        create_nav_button(5, "🔍  Fiyat Risk Analizi", self.show_analysis_frame,
                           fg_color=("#2a70bf", "#1f538d"), hover_color=("#1f538d", "#14375e"))
-        create_nav_button(5, "⚖️  Muhasebe Mutabakatı", self.show_reconciliation_frame,
+        create_nav_button(6, "⚖️  Muhasebe Mutabakatı", self.show_reconciliation_frame,
                           fg_color=("#e83e8f", "#d33682"), hover_color=("#d33682", "#a32a65"))
-        create_nav_button(6, "🧾  Genel Denetim Raporu", self.show_audit_frame,
+        create_nav_button(7, "🧾  Genel Denetim Raporu", self.show_audit_frame,
                           fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
-        create_nav_button(7, "⚙️  Firma ve Veri Ayarları", self.show_settings_frame)
+        create_nav_button(8, "⚙️  Firma ve Veri Ayarları", self.show_settings_frame)
 
         self.switch_var = ctk.StringVar(value="on")
         self.mode_switch = ctk.CTkSwitch(self.sidebar, text="Karanlık Mod", command=self.toggle_mode,
                                          variable=self.switch_var, onvalue="on", offvalue="off",
                                          font=ctk.CTkFont(size=12, weight="bold"))
-        self.mode_switch.grid(row=10, column=0, padx=20, pady=(10, 5), sticky="s")
+        self.mode_switch.grid(row=11, column=0, padx=20, pady=(10, 5), sticky="s")
 
         ctk.CTkLabel(self.sidebar, text="V 2.0 (Çevrimdışı)", font=ctk.CTkFont(size=10), text_color="gray") \
-            .grid(row=11, column=0, pady=(0, 20), sticky="s")
+            .grid(row=12, column=0, pady=(0, 20), sticky="s")
 
     def toggle_mode(self):
         if self.switch_var.get() == "on":
@@ -158,7 +235,6 @@ class AuditApp(ctk.CTk):
     def create_main_frame(self):
         self.main_frame = ctk.CTkFrame(self, corner_radius=12, fg_color=("gray95", "#242427"))
         self.main_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
-        self.show_welcome_screen()
 
     def clear_main_frame(self):
         for widget in self.main_frame.winfo_children():
@@ -246,17 +322,156 @@ class AuditApp(ctk.CTk):
                 messagebox.showerror("Hata", f"Şablon kaydedilemedi:\n{e}")
 
     def show_welcome_screen(self):
+        if self.db is None:
+            return self.show_no_firm_screen(welcome=True)
         self.clear_main_frame()
-        self.create_header("Sisteme Hoş Geldiniz",
+        self.create_header(f"Sisteme Hoş Geldiniz — {self.firm.title}",
                            "Sol menüden yapmak istediğiniz işlemi seçin. Verileriniz yerel diskte (offline) "
-                           "saklanmaktadır.\n\nÖnerilen akış: Firma Ayarları → Fatura (XML/Excel) → Yevmiye → "
-                           "Genel Denetim Raporu")
+                           "ve her firma için ayrı bir veritabanında saklanmaktadır.\n\nÖnerilen akış: Firma Seç → "
+                           "Fatura (XML/Excel) → Yevmiye → Genel Denetim Raporu")
         counts = self.db.counts()
         box = self.create_console_box()
+        self.log(box, f"> Aktif firma: {self.firm.display_name}" + (f"  |  VKN: {self.firm.vkn}" if self.firm.vkn
+                                                                    else "  |  VKN girilmedi (alıcı VKN kontrolü "
+                                                                         "atlanır)"))
         self.log(box, f"> Kayıtlı fatura: {counts['fatura']}  |  Fatura satırı: {counts['fatura_satiri']}  |  "
                       f"Yevmiye satırı: {counts['yevmiye_satiri']}  |  Yüklenen dosya: {counts['dosya']}")
 
+    def show_no_firm_screen(self, welcome=False):
+        self.clear_main_frame()
+        has_firms = bool(self.registry.list_firms())
+        title = "Sisteme Hoş Geldiniz" if welcome else "Önce Bir Firma Seçin"
+        text = ("Veri yükleme ve analiz ekranları, seçili firmanın verileriyle çalışır. "
+                + ("Devam etmek için listeden bir firma seçin ya da yeni bir firma oluşturun."
+                   if has_firms else "Başlamak için ilk firmanızı oluşturun. Her firmanın verileri ayrı saklanır."))
+        self.create_header(title, text)
+        row = self.create_button_row()
+        if has_firms:
+            self.add_button(row, "🏢  Firma Seç", self.show_firms_frame)
+        self.add_button(row, "➕  Yeni Firma", lambda: self.show_firm_form(None),
+                        fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
+
+    def show_firms_frame(self):
+        self.clear_main_frame()
+        self.create_header("Firmalar",
+                           "Denetlediğiniz firmalar. Her firmanın faturaları, yevmiye kayıtları ve analiz ayarları "
+                           "ayrı bir veritabanında tutulur. Son seçilen firma bir sonraki açılışta otomatik açılır.")
+        row = self.create_button_row()
+        self.add_button(row, "➕  Yeni Firma", lambda: self.show_firm_form(None),
+                        fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
+        firms = self.registry.list_firms()
+        if not firms:
+            ctk.CTkLabel(self.main_frame, text="Henüz kayıtlı firma yok.", font=self.font_label,
+                         text_color=("gray30", "gray70"), anchor="w").pack(fill="x", padx=40, pady=10)
+            return
+        table = ctk.CTkScrollableFrame(self.main_frame, corner_radius=8, fg_color=("white", "#18181a"))
+        table.pack(fill="both", expand=True, padx=40, pady=(10, 30))
+        table.grid_columnconfigure(1, weight=1)
+        bold = ctk.CTkFont(family="Segoe UI", size=13, weight="bold")
+        for col, text in enumerate(["Kod", "Unvan", "VKN/TCKN", "Sektör", "Oluşturulma", ""]):
+            ctk.CTkLabel(table, text=text, font=bold, anchor="w").grid(row=0, column=col, padx=8, pady=(6, 4),
+                                                                      sticky="w")
+        for i, firm in enumerate(firms, start=1):
+            active = self.firm is not None and firm.code == self.firm.code
+            color = ("#1f538d", "#3a7ebf") if active else ("black", "#d4d4d4")
+            values = [firm.code, firm.title + ("  (aktif)" if active else ""), firm.vkn or "-", firm.sector or "-",
+                      (firm.created_at or "")[:10]]
+            for col, text in enumerate(values):
+                ctk.CTkLabel(table, text=text, font=bold if active else self.font_label, text_color=color,
+                             anchor="w").grid(row=i, column=col, padx=8, pady=3, sticky="w")
+            btns = ctk.CTkFrame(table, fg_color="transparent")
+            btns.grid(row=i, column=5, padx=8, pady=3, sticky="e")
+            small = dict(height=28, width=80, font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"))
+            ctk.CTkButton(btns, text="Seç", state="disabled" if active else "normal",
+                          command=lambda c=firm.code: self.select_firm(c), **small).pack(side="left", padx=3)
+            ctk.CTkButton(btns, text="Düzenle", fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"),
+                          command=lambda c=firm.code: self.show_firm_form(c), **small).pack(side="left", padx=3)
+            ctk.CTkButton(btns, text="Sil", fg_color=("#c62828", "#b71c1c"), hover_color=("#b71c1c", "#7f0000"),
+                          command=lambda c=firm.code: self.delete_firm(c), **small).pack(side="left", padx=3)
+
+    def show_firm_form(self, code=None):
+        """Yeni firma (code=None) ya da mevcut firmayı düzenleme formu."""
+        firm = self.registry.get(code) if code else None
+        self.clear_main_frame()
+        if firm:
+            self.create_header("Firma Bilgilerini Düzenle",
+                               "Firma VKN/TCKN'si, alıcısı bu firma olmayan XML faturaların raporlanmasında "
+                               "kullanılır. Kod değiştirilse de firmanın verileri korunur.")
+        else:
+            self.create_header("Yeni Firma",
+                               "Firma kodu kısa ve benzersiz bir addır (ör. ABC_INSAAT). VKN/TCKN girilirse alıcı "
+                               "VKN kontrolü yapılır. Sektör isteğe bağlıdır.")
+        form = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        form.pack(fill="x", padx=40, pady=8)
+        entries = {}
+        fields = [("code", "Firma Kodu / Kısa Ad: *", firm.code if firm else "", "ör. ABC_INSAAT"),
+                  ("title", "Unvan: *", firm.title if firm else "", "ör. ABC İnşaat Taahhüt A.Ş."),
+                  ("vkn", "VKN/TCKN:", firm.vkn if firm else "", "10 veya 11 hane")]
+        for r, (key, label, value, placeholder) in enumerate(fields):
+            ctk.CTkLabel(form, text=label, font=self.font_label, anchor="w").grid(row=r, column=0, padx=(0, 12),
+                                                                                  pady=6, sticky="w")
+            entry = ctk.CTkEntry(form, width=360, placeholder_text=placeholder)
+            if value:
+                entry.insert(0, value)
+            entry.grid(row=r, column=1, pady=6, sticky="w")
+            entries[key] = entry
+        ctk.CTkLabel(form, text="Sektör:", font=self.font_label, anchor="w").grid(row=3, column=0, padx=(0, 12),
+                                                                                  pady=6, sticky="w")
+        sector = ctk.CTkComboBox(form, width=360, values=SECTORS)
+        sector.set(firm.sector if firm else "")
+        sector.grid(row=3, column=1, pady=6, sticky="w")
+        entries["sector"] = sector
+        self.firm_form_entries = entries
+        row = self.create_button_row()
+        self.add_button(row, "💾 Kaydet", lambda: self.save_firm_form(firm.code if firm else None),
+                        fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
+        self.add_button(row, "Vazgeç", self.show_firms_frame,
+                        fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"))
+
+    def save_firm_form(self, code=None):
+        values = {k: e.get().strip() for k, e in self.firm_form_entries.items()}
+        try:
+            if code is None:
+                firm = self.registry.create(values["code"], values["title"], values["vkn"], values["sector"])
+            else:
+                firm = self.registry.update(code, new_code=values["code"], title=values["title"],
+                                            vkn=values["vkn"], sector=values["sector"])
+        except FirmError as e:
+            messagebox.showwarning("Uyarı", str(e))
+            return
+        if code is None:
+            messagebox.showinfo("Başarılı", f"'{firm.title}' firması oluşturuldu ve seçildi.")
+            self.select_firm(firm.code)
+            return
+        if self.firm is not None and self.firm.code == code:
+            self.firm = firm
+            self.refresh_firm_display()
+        messagebox.showinfo("Başarılı", "Firma bilgileri kaydedildi.")
+        self.show_firms_frame()
+
+    def delete_firm(self, code):
+        firm = self.registry.get(code)
+        if firm is None:
+            return
+        counts = self.registry.open_db(code).counts()
+        if not messagebox.askyesno(
+                "Firmayı Sil",
+                f"'{firm.display_name}' firması ve TÜM verileri ({counts['fatura']} fatura, "
+                f"{counts['yevmiye_satiri']} yevmiye satırı, analiz ayarları) kalıcı olarak silinecek.\n\n"
+                "BU İŞLEM GERİ ALINAMAZ.\n\nDevam edilsin mi?", icon="warning"):
+            return
+        try:
+            self.registry.delete(code)
+        except Exception as e:
+            messagebox.showerror("Hata", f"Firma silinemedi:\n{e}")
+            return
+        if self.firm is not None and self.firm.code == firm.code:
+            self.close_firm()
+        messagebox.showinfo("Tamam", f"'{firm.title}' firması silindi.")
+        self.show_firms_frame()
+
     # ------------------------------------------------------------------ XML YÜKLEME
+    @requires_firm
     def show_import_frame(self):
         self.clear_main_frame()
         self.create_header("UBL-TR Fatura Aktarımı",
@@ -327,6 +542,7 @@ class AuditApp(ctk.CTk):
             self.log_messages(box, warnings, "uyari")
 
     # ------------------------------------------------------------------ EXCEL FATURA YÜKLEME
+    @requires_firm
     def show_excel_import_frame(self):
         self.clear_main_frame()
         self.create_header("Excel'den Toplu Fatura Aktarımı",
@@ -373,6 +589,7 @@ class AuditApp(ctk.CTk):
             self.log_messages(box, res.warnings, "uyari")
 
     # ------------------------------------------------------------------ YEVMİYE YÜKLEME
+    @requires_firm
     def show_journal_import_frame(self):
         self.clear_main_frame()
         self.create_header("Muhasebe Yevmiye Kayıtları Yükle",
@@ -416,6 +633,7 @@ class AuditApp(ctk.CTk):
             self.log_messages(box, res.warnings, "uyari")
 
     # ------------------------------------------------------------------ RİSK ANALİZİ
+    @requires_firm
     def show_analysis_frame(self):
         self.clear_main_frame()
         self.create_header("Fatura Bazlı Risk ve Anomali Analizi",
@@ -469,6 +687,7 @@ class AuditApp(ctk.CTk):
             messagebox.showerror("Hata", f"Excel kaydedilirken hata oluştu:\n{e}")
 
     # ------------------------------------------------------------------ MUHASEBE MUTABAKAT
+    @requires_firm
     def show_reconciliation_frame(self):
         self.clear_main_frame()
         self.create_header("Fatura ve Yevmiye Mutabakatı",
@@ -520,6 +739,7 @@ class AuditApp(ctk.CTk):
             self._export(file_path, sections)
 
     # ------------------------------------------------------------------ GENEL DENETİM RAPORU
+    @requires_firm
     def show_audit_frame(self):
         self.clear_main_frame()
         self.create_header("Genel Denetim Raporu",
@@ -552,7 +772,7 @@ class AuditApp(ctk.CTk):
         self.log(box, "> Tüm kontroller çalıştırılıyor...")
         self.update()
         summary, sections, notes, counts = checks.run_full_audit(
-            self.db, self.audit_period_var.get(), threshold, accounts, tolerance, self.setting("company_vkn", ""))
+            self.db, self.audit_period_var.get(), threshold, accounts, tolerance, self.firm.vkn)
         if counts["fatura"] == 0:
             self.audit_sections = None
             self.log(box, "[BİLGİ] Veritabanında fatura bulunamadı.", "uyari")
@@ -571,19 +791,25 @@ class AuditApp(ctk.CTk):
                 self.log_section(box, tr_upper(title), df)
 
     # ------------------------------------------------------------------ AYARLAR
+    @requires_firm
     def show_settings_frame(self):
         self.clear_main_frame()
         self.create_header("Firma ve Veri Ayarları",
-                           "Firma VKN'si girilirse, alıcısı bu firma olmayan XML faturalar raporlanır.")
+                           "Firma VKN'si girilirse, alıcısı bu firma olmayan XML faturalar raporlanır. "
+                           "Analiz ayarları (eşik, hesap kodları, tolerans, dönem) bu firmaya özel saklanır.")
+        info = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        info.pack(fill="x", padx=40, pady=(10, 8))
+        f = self.firm
+        ctk.CTkLabel(info, font=self.font_label, justify="left", anchor="w",
+                     text=f"Firma kodu: {f.code}\nUnvan: {f.title}\nVKN/TCKN: {f.vkn or '(girilmedi)'}\n"
+                          f"Sektör: {f.sector or '-'}\nOluşturulma: {f.created_at or '-'}").pack(fill="x")
         row = self.create_button_row()
-        self.company_vkn_entry = self.add_labeled_entry(row, "Firma VKN/TCKN:", self.setting("company_vkn"), 140)
-        self.company_title_entry = self.add_labeled_entry(row, "Unvan:", self.setting("company_title"), 300)
-        self.add_button(row, "💾 Kaydet", self.save_company)
+        self.add_button(row, "✏️  Firma Bilgilerini Düzenle", lambda: self.show_firm_form(self.firm.code))
 
         counts = self.db.counts()
-        info = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        info.pack(fill="x", padx=40, pady=(25, 8))
-        ctk.CTkLabel(info, font=self.font_label, justify="left", anchor="w",
+        info2 = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        info2.pack(fill="x", padx=40, pady=(25, 8))
+        ctk.CTkLabel(info2, font=self.font_label, justify="left", anchor="w",
                      text=f"Kayıtlı fatura: {counts['fatura']}    Fatura satırı: {counts['fatura_satiri']}    "
                           f"Yevmiye satırı: {counts['yevmiye_satiri']}    Yüklenen dosya: {counts['dosya']}") \
             .pack(fill="x")
@@ -591,17 +817,9 @@ class AuditApp(ctk.CTk):
         self.add_button(row2, "🗑  Tüm Verileri Sil", self.clear_data,
                         fg_color=("#c62828", "#b71c1c"), hover_color=("#b71c1c", "#7f0000"))
 
-    def save_company(self):
-        vkn = normalize_vkn(self.company_vkn_entry.get())
-        if vkn and len(vkn) not in (10, 11):
-            messagebox.showwarning("Uyarı", "VKN 10, TCKN 11 haneli olmalıdır.")
-            return
-        self.db.set_setting("company_vkn", vkn)
-        self.db.set_setting("company_title", self.company_title_entry.get().strip())
-        messagebox.showinfo("Başarılı", "Firma bilgileri kaydedildi.")
-
     def clear_data(self):
-        if not messagebox.askyesno("Onay", "Tüm fatura ve yevmiye kayıtları silinecek. Bu işlem geri alınamaz.\n\n"
+        if not messagebox.askyesno("Onay", f"'{self.firm.title}' firmasının tüm fatura ve yevmiye kayıtları "
+                                           "silinecek (diğer firmalar etkilenmez). Bu işlem geri alınamaz.\n\n"
                                            "Devam edilsin mi?", icon="warning"):
             return
         self.db.clear_data()

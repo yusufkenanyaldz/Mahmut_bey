@@ -10,9 +10,9 @@ import pandas as pd
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from denetim import checks, importers  # noqa: E402
-from denetim.database import DatabaseManager  # noqa: E402
+from denetim.export import export_sections  # noqa: E402
+from denetim.firms import FirmRegistry  # noqa: E402
 from denetim.utils import normalize_doc_no, parse_account_list  # noqa: E402
-from app import export_sections  # noqa: E402
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 FIRMS = os.path.join(BASE, "firmalar")
@@ -158,25 +158,27 @@ def score(meta, sections):
 def main():
     metas = json.load(open(os.path.join(FIRMS, "firmalar.json"), encoding="utf-8"))
     all_results = []
+    # Metin her firmayı programın firma seçicisiyle açar: firma başına ayrı veritabanı (sim/calisma/veri/)
+    registry = FirmRegistry(os.path.join(WORK, "veri"))
     for meta in metas:
-        dbpath = os.path.join(WORK, f"{meta['code']}.db")
-        if os.path.exists(dbpath):
-            os.remove(dbpath)
-        db = DatabaseManager(dbpath)
-        db.set_setting("company_vkn", meta["vkn"])
+        if registry.get(meta["code"]):
+            registry.delete(meta["code"])  # Her çalıştırma temiz başlar
+        firm = registry.create(meta["code"], meta["name"], meta["vkn"], meta["sector"])
+        registry.set_last_firm(firm.code)
+        db = registry.open_db(firm.code)
         log = {"code": meta["code"], "sector": meta["sector"], "name": meta["name"], "fatura": meta["n_invoices"],
                "format": meta["journal_format"], "belge": meta["belge_style"], "kaynak": meta["source"]}
         import_firm(meta, db, log)
         accounts = parse_account_list(",".join(meta["accounts"]))
         t = time.time()
-        summary, sections, notes, counts = checks.run_full_audit(db, "Aylık", 15.0, accounts, 0.01, meta["vkn"])
+        summary, sections, notes, counts = checks.run_full_audit(db, "Aylık", 15.0, accounts, 0.01, firm.vkn)
         log["t_audit"] = round(time.time() - t, 1)
         export_sections(os.path.join(WORK, f"{meta['code']}_Denetim_Raporu.xlsx"),
                         dict([("Özet", summary)] + list(sections.items())))
         sc, fp = score(meta, sections)
         # Metin'in ikinci denemesi: dövizli firmalarda tolerans 50 TL
         if meta["foreign_invoices"]:
-            _, sec2, _, _ = checks.run_full_audit(db, "Aylık", 15.0, accounts, 50.0, meta["vkn"])
+            _, sec2, _, _ = checks.run_full_audit(db, "Aylık", 15.0, accounts, 50.0, firm.vkn)
             sc2, _ = score(meta, sec2)
             log["tolerans50_tutar"] = sc2["Tutar Farkları"]
         # Eşik duyarlılığı
