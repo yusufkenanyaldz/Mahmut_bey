@@ -205,6 +205,13 @@ class FirmRegistry:
     def set_last_firm(self, code):
         self._set_state("last_firm", code)
 
+    def get_pref(self, key, default=None):
+        """Firmadan bağımsız uygulama tercihi (ör. aydınlık / karanlık görünüm)."""
+        return self._get_state(f"pref:{key}", default)
+
+    def set_pref(self, key, value):
+        self._set_state(f"pref:{key}", value)
+
     # ------------------------------------------------------------------ eski sürüm (tek veritabanı) aktarımı
     @staticmethod
     def find_legacy_db(*folders):

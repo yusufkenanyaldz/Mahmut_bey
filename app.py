@@ -47,6 +47,63 @@ pd.set_option("display.width", 250)
 pd.set_option("display.max_columns", 30)
 pd.set_option("display.max_colwidth", 40)
 
+# --- TEMA: sakin, tek vurgu renkli palet. Her değer (aydınlık, karanlık) çiftidir. ---
+C = {
+    "bg": ("#F3F4F8", "#14161B"),           # pencere zemini
+    "sidebar": ("#FFFFFF", "#1A1D23"),
+    "card": ("#FFFFFF", "#1E2128"),
+    "card_alt": ("#F7F8FB", "#23262E"),      # kart içi ikincil yüzey
+    "border": ("#E3E6ED", "#2C3039"),
+    "text": ("#1F2430", "#E6E8EE"),
+    "muted": ("#6B7280", "#9AA1AE"),
+    "faint": ("#9CA3AF", "#6B7280"),
+    "accent": ("#4F6BED", "#6C84F5"),
+    "accent_hover": ("#3F59D6", "#5A73E8"),
+    "accent_soft": ("#EAEEFD", "#262D45"),   # aktif menü / ikincil buton zemini
+    "accent_soft_hover": ("#DCE2FB", "#2E3654"),
+    "success": ("#2E9E6A", "#3DB57D"),
+    "success_soft": ("#E6F5EE", "#1D3329"),
+    "warning": ("#C98A12", "#E0A83A"),
+    "warning_soft": ("#FBF2E0", "#3A3020"),
+    "danger": ("#D2504B", "#E06A65"),
+    "danger_soft": ("#FBE9E8", "#3A2224"),
+    "input": ("#F7F8FB", "#171A20"),
+}
+# Buton türleri: (zemin, üzerine gelince, yazı)
+BTN = {
+    "primary": (C["accent"], C["accent_hover"], ("#FFFFFF", "#FFFFFF")),
+    "secondary": (C["accent_soft"], C["accent_soft_hover"], C["accent"]),
+    "success": (C["success"], ("#258757", "#33A06D"), ("#FFFFFF", "#FFFFFF")),
+    "warning": (C["warning_soft"], ("#F5E6C5", "#463A26"), C["warning"]),
+    "danger": (C["danger_soft"], ("#F7D9D7", "#46282B"), C["danger"]),
+    "ghost": ("transparent", C["card_alt"], C["muted"]),
+}
+FONT = "Segoe UI"
+
+
+def tbutton(parent, text, command, kind="primary", height=38, width=None, font=None, **kw):
+    """Temalı buton (primary / secondary / success / warning / danger / ghost)."""
+    fg, hover, txt = BTN[kind]
+    opts = dict(text=text, command=command, height=height, corner_radius=10, fg_color=fg, hover_color=hover,
+                text_color=txt, font=font or ctk.CTkFont(family=FONT, size=13, weight="bold"), border_width=0)
+    if width:
+        opts["width"] = width
+    opts.update(kw)
+    return ctk.CTkButton(parent, **opts)
+
+
+def initials(title):
+    """Firma unvanından avatar için baş harfler: 'Arslan İnşaat Ltd. Şti.' → 'Aİ'."""
+    words = [w for w in str(title or "").replace(".", " ").split() if w[:1].isalpha()]
+    return ("".join(w[0] for w in words[:2]) or "?").upper()
+
+
+def card(parent, **kw):
+    """Yumuşak köşeli, ince kenarlıklı kart."""
+    opts = dict(fg_color=C["card"], corner_radius=14, border_width=1, border_color=C["border"])
+    opts.update(kw)
+    return ctk.CTkFrame(parent, **opts)
+
 
 def df_to_text(df, max_rows=500):
     if df.empty:
@@ -80,6 +137,7 @@ class ColumnMappingDialog(ctk.CTkToplevel):
         self.schema = importers.SCHEMAS[kind]
         self.required = importers.JOURNAL_REQUIRED if kind == importers.KIND_YEVMIYE else importers.INVOICE_REQUIRED
         self.result = None
+        self.configure(fg_color=C["bg"])
         self.title(f"Sütunları Eşle — {file_name}")
         self.geometry("1000x720")
         font = ctk.CTkFont(family="Segoe UI", size=13)
@@ -120,9 +178,8 @@ class ColumnMappingDialog(ctk.CTkToplevel):
 
         buttons = ctk.CTkFrame(self, fg_color="transparent")
         buttons.pack(fill="x", padx=20, pady=(0, 16))
-        ctk.CTkButton(buttons, text="✔ Onayla ve Yükle", command=self.confirm).pack(side="left", padx=(0, 10))
-        ctk.CTkButton(buttons, text="İptal", command=self.destroy, fg_color=("gray55", "gray30"),
-                      hover_color=("gray45", "gray25")).pack(side="left")
+        tbutton(buttons, "✓  Onayla ve Yükle", self.confirm).pack(side="left", padx=(0, 10))
+        tbutton(buttons, "İptal", self.destroy, kind="secondary").pack(side="left")
         self.refresh(initial.header_row, initial.columns)
 
         self.transient(master)
@@ -196,55 +253,75 @@ class BulguPaneli(ctk.CTkFrame):
         self.sections = OrderedDict()  # İncelenebilir bulgu bölümleri (ham)
         self.view = OrderedDict()      # İnceleme sütunları uygulanmış
         self.anahtarlar = {}           # Treeview satır kimliği → bulgu anahtarı
+        self.etiketler = OrderedDict()
+        self.liste_butonlari = {}      # bölüm başlığı → sol listedeki satır
+        self.bolum_var = ctk.StringVar(value="")  # Seçili bölümün listedeki etiketi
         font = app.font_label
+        small_font = ctk.CTkFont(family=FONT, size=12)
 
-        top = ctk.CTkFrame(self, fg_color="transparent")
-        top.pack(fill="x", pady=(0, 6))
-        ctk.CTkLabel(top, text="Kontrol:", font=font).pack(side="left", padx=(0, 6))
-        self.bolum_var = ctk.StringVar(value="")
-        self.bolum_menu = ctk.CTkOptionMenu(top, values=[""], variable=self.bolum_var, width=470,
-                                            dynamic_resizing=False, command=lambda _: self.refresh())
-        self.bolum_menu.pack(side="left", padx=(0, 14))
+        # Sol: kontrol listesi (her kontrol için açık bulgu rozeti)
+        left = card(self, width=270)
+        left.pack(side="left", fill="y", padx=(0, 12))
+        left.pack_propagate(False)
+        ctk.CTkLabel(left, text="KONTROLLER", font=ctk.CTkFont(family=FONT, size=11, weight="bold"),
+                     text_color=C["faint"], anchor="w").pack(fill="x", padx=16, pady=(14, 6))
+        self.liste = ctk.CTkScrollableFrame(left, fg_color="transparent", corner_radius=0)
+        self.liste.pack(fill="both", expand=True, padx=6, pady=(0, 10))
+
+        # Sağ: araç çubuğu, tablo, işlem çubuğu
+        right = ctk.CTkFrame(self, fg_color="transparent")
+        right.pack(side="left", fill="both", expand=True)
+        top = ctk.CTkFrame(right, fg_color="transparent")
+        top.pack(fill="x", pady=(0, 8))
+        self.baslik_label = ctk.CTkLabel(top, text="", font=ctk.CTkFont(family=FONT, size=15, weight="bold"),
+                                         text_color=C["text"], anchor="w")
+        self.baslik_label.pack(side="left")
         self.goster_var = ctk.BooleanVar(value=app.setting("inceleme_sorun_yok_goster", "0") == "1")
-        ctk.CTkCheckBox(top, text="Sorun yok olanları göster", variable=self.goster_var, font=font,
-                        command=self.on_toggle_goster).pack(side="left", padx=(0, 14))
-        self.info_label = ctk.CTkLabel(top, text="", font=font, text_color=("gray30", "gray70"), anchor="w")
+        ctk.CTkSwitch(top, text="Sorun yok olanları göster", variable=self.goster_var, font=small_font,
+                      text_color=C["muted"], progress_color=C["accent"], command=self.on_toggle_goster) \
+            .pack(side="right")
+        bar = ctk.CTkFrame(right, fg_color="transparent")
+        bar.pack(fill="x", pady=(0, 6))
+        self.info_label = ctk.CTkLabel(bar, text="Kontrolü çalıştırınca bulgular burada listelenir.",
+                                       font=small_font, text_color=C["muted"], anchor="w")
         self.info_label.pack(side="left", fill="x", expand=True)
+        tbutton(bar, "Tümünü Seç", self.select_all, kind="ghost", height=26,
+                font=ctk.CTkFont(family=FONT, size=12, weight="bold")).pack(side="right")
 
-        table = ctk.CTkFrame(self, fg_color=("white", "#18181a"), corner_radius=8, border_width=1,
-                             border_color=("gray75", "#3c3c3c"))
+        table = card(right)
         table.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(table, style="Bulgu.Treeview", show="headings", selectmode="extended", height=4)
         vsb = ctk.CTkScrollbar(table, orientation="vertical", command=self.tree.yview)
         hsb = ctk.CTkScrollbar(table, orientation="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        self.tree.grid(row=0, column=0, sticky="nsew", padx=(4, 0), pady=(4, 0))
-        vsb.grid(row=0, column=1, sticky="ns", pady=(4, 0))
-        hsb.grid(row=1, column=0, sticky="ew", padx=(4, 0), pady=(0, 2))
+        self.tree.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=(8, 0))
+        vsb.grid(row=0, column=1, sticky="ns", pady=(8, 0), padx=(0, 4))
+        hsb.grid(row=1, column=0, sticky="ew", padx=(8, 0), pady=(0, 6))
         table.grid_rowconfigure(0, weight=1)
         table.grid_columnconfigure(0, weight=1)
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tree.bind("<Control-a>", lambda e: (self.select_all(), "break")[1])
 
-        bottom = ctk.CTkFrame(self, fg_color="transparent")
-        bottom.pack(fill="x", pady=(8, 0))
-        ctk.CTkLabel(bottom, text="Not:", font=font).pack(side="left", padx=(0, 6))
-        self.not_entry = ctk.CTkEntry(bottom, width=260, placeholder_text="seçili bulgulara yazılır")
-        self.not_entry.pack(side="left", padx=(0, 10))
-        small = dict(height=32, font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"))
-        ctk.CTkButton(bottom, text="✔ İncelendi – Sorun Yok", fg_color=("#388e3c", "#2e7d32"),
-                      hover_color=("#2e7d32", "#1b5e20"), command=lambda: self.mark(inceleme.DURUM_SORUN_YOK),
-                      **small).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(bottom, text="✎ Düzeltme İstendi", fg_color=("#d4a000", "#b58900"),
-                      hover_color=("#b58900", "#856500"), command=lambda: self.mark(inceleme.DURUM_DUZELTME),
-                      **small).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(bottom, text="↺ Açığa Al", fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"),
-                      command=lambda: self.mark(inceleme.DURUM_ACIK), width=100, **small).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(bottom, text="Tümünü Seç", fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"),
-                      command=self.select_all, width=100, **small).pack(side="left", padx=(0, 6))
-        self.sel_label = ctk.CTkLabel(bottom, text="", font=font, text_color=("gray30", "gray70"))
-        self.sel_label.pack(side="left", padx=(6, 0))
+        bottom = card(right, fg_color=C["card_alt"])
+        bottom.pack(fill="x", pady=(10, 0))
+        inner = ctk.CTkFrame(bottom, fg_color="transparent")
+        inner.pack(fill="x", padx=10, pady=8)
+        self.sel_label = ctk.CTkLabel(inner, text="Seçim yok", font=small_font, text_color=C["muted"], width=80,
+                                      anchor="w")
+        self.sel_label.pack(side="left", padx=(4, 8))
+        small = dict(height=34, font=ctk.CTkFont(family=FONT, size=12, weight="bold"))
+        tbutton(inner, "↺  Açığa Al", lambda: self.mark(inceleme.DURUM_ACIK), kind="secondary", width=100,
+                **small).pack(side="right", padx=(6, 0))
+        tbutton(inner, "✎  Düzeltme İstendi", lambda: self.mark(inceleme.DURUM_DUZELTME), kind="warning",
+                width=150, **small).pack(side="right", padx=(6, 0))
+        tbutton(inner, "✓  Sorun Yok", lambda: self.mark(inceleme.DURUM_SORUN_YOK), kind="success", width=118,
+                **small).pack(side="right", padx=(6, 0))
+        self.not_entry = ctk.CTkEntry(inner, height=34, corner_radius=10, border_width=1,
+                                      border_color=C["border"], fg_color=C["card"],
+                                      placeholder_text="Not (seçili bulgulara yazılır)")
+        self.not_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
         app.apply_tree_style()
+        self.build_list(None)
 
     # ------------------------------------------------------------------ veri
     def set_sections(self, sections):
@@ -264,14 +341,47 @@ class BulguPaneli(ctk.CTkFrame):
         ozet = inceleme.inceleme_ozeti(self.view).set_index("Kontrol")
         self.etiketler = OrderedDict(
             (f"{t}  —  {inceleme.ozet_satiri(ozet.loc[t])}" if t in ozet.index else t, t) for t in self.view)
-        self.bolum_menu.configure(values=list(self.etiketler) or [""])
+        self.build_list(ozet)
+
+    def build_list(self, ozet):
+        """Sol listedeki kontrol satırlarını rozetleriyle yeniden çizer (rozet: açık bulgu sayısı)."""
+        for w in self.liste.winfo_children():
+            w.destroy()
+        self.liste_butonlari = {}
+        if not self.view:
+            ctk.CTkLabel(self.liste, text="Kontrolü çalıştırınca\nbulgular burada listelenir.",
+                         font=ctk.CTkFont(family=FONT, size=12), text_color=C["faint"], justify="left") \
+                .pack(fill="x", padx=10, pady=10)
+            return
+        for t in self.view:
+            acik = int(ozet.loc[t, "Acik"]) if t in ozet.index else 0
+            duz = int(ozet.loc[t, "Duzeltme_Istendi"]) if t in ozet.index else 0
+            row = ctk.CTkFrame(self.liste, fg_color="transparent", corner_radius=10, cursor="hand2")
+            row.pack(fill="x", pady=1)
+            lbl = ctk.CTkLabel(row, text=t, font=ctk.CTkFont(family=FONT, size=12), text_color=C["text"],
+                               anchor="w", justify="left", wraplength=175)
+            lbl.pack(side="left", fill="x", expand=True, padx=(10, 4), pady=7)
+            if acik:
+                rozet, renk, zemin = str(acik), C["danger"], C["danger_soft"]
+            elif duz:
+                rozet, renk, zemin = str(duz), C["warning"], C["warning_soft"]
+            else:
+                rozet, renk, zemin = "✓", C["success"], C["success_soft"]
+            ctk.CTkLabel(row, text=rozet, font=ctk.CTkFont(family=FONT, size=11, weight="bold"), text_color=renk,
+                         fg_color=zemin, corner_radius=9, width=34, height=22).pack(side="right", padx=(0, 8))
+            for w in (row, lbl):
+                w.bind("<Button-1>", lambda _e, b=t: self.set_bolum(b))
+            self.liste_butonlari[t] = row
 
     def bolum_basligi(self):
-        return getattr(self, "etiketler", {}).get(self.bolum_var.get(), "")
+        return self.etiketler.get(self.bolum_var.get(), "")
 
     def set_bolum(self, baslik):
         etiket = next((e for e, t in self.etiketler.items() if t == baslik), "")
         self.bolum_var.set(etiket)
+        for t, row in self.liste_butonlari.items():
+            row.configure(fg_color=C["accent_soft"] if t == baslik else "transparent")
+        self.baslik_label.configure(text=baslik or "Bulgular")
         self.refresh()
 
     def export_sections(self, sections):
@@ -293,7 +403,7 @@ class BulguPaneli(ctk.CTkFrame):
         df = self.view.get(baslik)
         if df is None:
             tree["columns"] = ()
-            self.info_label.configure(text="Bulgu yok. Kontrolü çalıştırın." if not self.sections else "")
+            self.info_label.configure(text="Kontrolü çalıştırınca bulgular burada listelenir." if not self.sections else "Bu kontrolde bulgu yok.")
             self.update_sel_label()
             return
         gorunen = df if self.goster_var.get() else inceleme.sorun_yok_gizle(df)
@@ -313,7 +423,7 @@ class BulguPaneli(ctk.CTkFrame):
             iid = str(i)
             self.anahtarlar[iid] = r[inceleme.ANAHTAR_COL]
             tree.insert("", "end", iid=iid, values=[hucre_metni(r[c]) for c in cols],
-                        tags=(self.DURUM_ETIKET.get(r[inceleme.DURUM_COL], "acik"),))
+                        tags=(self.DURUM_ETIKET.get(r[inceleme.DURUM_COL], "acik"), "tek" if i % 2 else "cift"))
         text = f"{len(gorunen)} bulgu gösteriliyor"
         if gizli:
             text += f" ({gizli} 'sorun yok' gizli)"
@@ -324,7 +434,8 @@ class BulguPaneli(ctk.CTkFrame):
 
     def update_sel_label(self):
         n = len(self.tree.selection())
-        self.sel_label.configure(text=f"{n} seçili" if n else "")
+        self.sel_label.configure(text=f"{n} seçili" if n else "Seçim yok",
+                                 text_color=C["accent"] if n else C["muted"])
 
     def on_toggle_goster(self):
         self.app.db.set_setting("inceleme_sorun_yok_goster", "1" if self.goster_var.get() else "0")
@@ -372,21 +483,30 @@ class AuditApp(ctk.CTk):
         self.recon_ek, self.audit_ek = [], []
 
         self.title(APP_TITLE)
-        self.geometry("1280x800")
+        self.geometry("1360x860")
+        self.minsize(1100, 700)
 
-        ctk.set_appearance_mode("Dark")
+        ctk.set_appearance_mode(self.registry.get_pref("appearance", "Light"))
         ctk.set_default_color_theme("blue")
+        self.configure(fg_color=C["bg"])
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        self.font_title = ctk.CTkFont(family="Segoe UI", size=22, weight="bold")
-        self.font_subtitle = ctk.CTkFont(family="Segoe UI", size=14)
-        self.font_btn = ctk.CTkFont(family="Segoe UI", size=14, weight="bold")
-        self.font_label = ctk.CTkFont(family="Segoe UI", size=13)
-        self.font_console = ctk.CTkFont(family="Consolas", size=13)
-        self.tree_font = ("Segoe UI", 10)
-        self.tree_heading_font = ("Segoe UI", 10, "bold")
+        self.font_title = ctk.CTkFont(family=FONT, size=24, weight="bold")
+        self.font_subtitle = ctk.CTkFont(family=FONT, size=13)
+        self.font_btn = ctk.CTkFont(family=FONT, size=13, weight="bold")
+        self.font_label = ctk.CTkFont(family=FONT, size=13)
+        self.font_small = ctk.CTkFont(family=FONT, size=12)
+        self.font_section = ctk.CTkFont(family=FONT, size=11, weight="bold")
+        self.font_console = ctk.CTkFont(family="Consolas", size=12)
+        self.tree_font = (FONT, 10)
+        self.tree_heading_font = (FONT, 10, "bold")
+        self.check_style = dict(font=self.font_small, text_color=C["text"], fg_color=C["accent"],
+                                hover_color=C["accent_hover"], border_color=C["faint"], corner_radius=6,
+                                checkbox_width=20, checkbox_height=20, border_width=2)
+        self.nav_buttons = {}
+        self._row_parent = None  # create_button_row satırlarının ekleneceği kap (ayar kartı açıkken)
 
         self.create_sidebar()
         self.create_main_frame()
@@ -443,12 +563,15 @@ class AuditApp(ctk.CTk):
     def refresh_firm_display(self):
         if self.firm:
             self.title(f"{APP_TITLE} | {self.firm.title}")
-            vkn = f"VKN: {self.firm.vkn}" if self.firm.vkn else "VKN girilmedi"
-            self.firm_name_label.configure(text=self.firm.title, text_color=("black", "white"))
-            self.firm_info_label.configure(text=f"{self.firm.code}  •  {vkn}")
+            vkn = f"VKN {self.firm.vkn}" if self.firm.vkn else "VKN girilmedi"
+            self.firm_avatar.configure(text=initials(self.firm.title), fg_color=C["accent_soft"],
+                                       text_color=C["accent"])
+            self.firm_name_label.configure(text=self.firm.title, text_color=C["text"])
+            self.firm_info_label.configure(text=f"{self.firm.code}\n{vkn}")
         else:
             self.title(APP_TITLE)
-            self.firm_name_label.configure(text="Firma seçilmedi", text_color=("#b58900", "#d4a000"))
+            self.firm_avatar.configure(text="?", fg_color=C["warning_soft"], text_color=C["warning"])
+            self.firm_name_label.configure(text="Firma seçilmedi", text_color=C["warning"])
             self.firm_info_label.configure(text="Çalışmak için bir firma seçin")
 
     # ------------------------------------------------------------------ ayar yardımcıları
@@ -494,11 +617,11 @@ class AuditApp(ctk.CTk):
         """Tutar toleransları satırı: TL faturalar için sabit TL, dövizli faturalar için yüzde kur toleransı.
         Dönüş: (TL tolerans kutusu, kur toleransı kutusu)"""
         row = self.create_button_row()
-        tl = self.add_labeled_entry(row, "Tolerans (TL):", self.setting("tolerance", "0.01"), 70)
-        kur = self.add_labeled_entry(row, "Kur Toleransı (%, dövizli faturalar):",
+        tl = self.add_labeled_entry(row, "Tolerans (TL)", self.setting("tolerance", "0.01"), 70)
+        kur = self.add_labeled_entry(row, "Kur toleransı (%, dövizli)",
                                      self.setting("kur_toleransi", f"{checks.KUR_TOLERANSI_VARSAYILAN:g}"), 55)
         ctk.CTkLabel(row, text="(TL faturalara yüzde uygulanmaz)", font=self.font_label,
-                     text_color=("gray35", "gray60"), anchor="w").pack(side="left")
+                     text_color=C["faint"], anchor="w").pack(side="left")
         return tl, kur
 
     def read_accounts(self, entry):
@@ -522,18 +645,18 @@ class AuditApp(ctk.CTk):
     def add_haric_onek_row(self, with_excel_option=True):
         """Hariç önek listesi satırı: giriş kutusu, Varsayılan butonu ve (istenirse) Excel seçeneği."""
         row = self.create_button_row()
-        entry = self.add_labeled_entry(row, "Faturasız Kontrolde Hariç Önekler:", self.haric_onek_text(), 380,
+        entry = self.add_labeled_entry(row, "Hariç belge önekleri", self.haric_onek_text(), 380,
                                        "boş: önek filtresi yok")
 
         def reset():
             entry.delete(0, "end")
             entry.insert(0, checks.VARSAYILAN_HARIC_ONEKLER)
 
-        ctk.CTkButton(row, text="Varsayılan", width=90, height=28, command=reset).pack(side="left", padx=(0, 18))
+        tbutton(row, "Varsayılan", reset, kind="secondary", width=96, height=32).pack(side="left", padx=(0, 18))
         var = None
         if with_excel_option:
             var = ctk.BooleanVar(value=self.setting("haric_excel", "0") == "1")
-            ctk.CTkCheckBox(row, text="Hariç tutulanları Excel'e ekle", variable=var, font=self.font_label,
+            ctk.CTkCheckBox(row, text="Hariç tutulanları Excel'e ekle", variable=var, **self.check_style,
                             command=lambda: self.db.set_setting("haric_excel", "1" if var.get() else "0")) \
                 .pack(side="left")
         return entry, var
@@ -550,20 +673,20 @@ class AuditApp(ctk.CTk):
         kelime listesi (Varsayılan butonuyla), en az alım sayısı ve analiz dışı satırların Excel seçeneği."""
         row = self.create_button_row()
         tevkifat = ctk.BooleanVar(value=self.setting("fiyat_tevkifat_haric", "1") == "1")
-        ctk.CTkCheckBox(row, text="Tevkifatlı faturaları hariç tut", variable=tevkifat, font=self.font_label) \
+        ctk.CTkCheckBox(row, text="Tevkifatlı faturaları hariç tut", variable=tevkifat, **self.check_style) \
             .pack(side="left", padx=(0, 18))
         kelime = ctk.BooleanVar(value=self.setting("fiyat_kelime_haric", "1") == "1")
-        ctk.CTkCheckBox(row, text="Anahtar kelimeyle hariç tut", variable=kelime, font=self.font_label) \
+        ctk.CTkCheckBox(row, text="Anahtar kelimeyle hariç tut", variable=kelime, **self.check_style) \
             .pack(side="left", padx=(0, 18))
-        min_alim = self.add_labeled_entry(row, "En Az Alım (dönemde):",
+        min_alim = self.add_labeled_entry(row, "En az alım (dönemde)",
                                           self.setting("fiyat_min_alim", str(checks.FIYAT_MIN_ALIM)), 50)
         excel = ctk.BooleanVar(value=self.setting("fiyat_haric_excel", "1") == "1")
-        ctk.CTkCheckBox(row, text="Analiz dışı satırları Excel'e ekle", variable=excel, font=self.font_label,
+        ctk.CTkCheckBox(row, text="Analiz dışı satırları Excel'e ekle", variable=excel, **self.check_style,
                         command=lambda: self.db.set_setting("fiyat_haric_excel", "1" if excel.get() else "0")) \
             .pack(side="left")
         row2 = self.create_button_row()
         kelimeler = self.add_labeled_entry(
-            row2, "Fiyat Analizinde Hariç Ürün/Hizmet Kelimeleri:",
+            row2, "Hariç ürün / hizmet kelimeleri",
             self.setting("fiyat_haric_kelimeler", checks.VARSAYILAN_FIYAT_HARIC_KELIMELER), 460,
             "boş: kelime filtresi yok")
 
@@ -571,7 +694,7 @@ class AuditApp(ctk.CTk):
             kelimeler.delete(0, "end")
             kelimeler.insert(0, checks.VARSAYILAN_FIYAT_HARIC_KELIMELER)
 
-        ctk.CTkButton(row2, text="Varsayılan", width=90, height=28, command=reset).pack(side="left")
+        tbutton(row2, "Varsayılan", reset, kind="secondary", width=96, height=32).pack(side="left")
         return {"tevkifat": tevkifat, "kelime": kelime, "min_alim": min_alim, "kelimeler": kelimeler, "excel": excel}
 
     def read_fiyat_kurallari(self, w):
@@ -596,21 +719,21 @@ class AuditApp(ctk.CTk):
         """Vergi ve satış mutabakatı ayarları: KDV (191), tevkifat (360), gelir (600–602) ve hesaplanan KDV (391)
         hesapları, maliyete eklenen vergi türü kodları (Varsayılan butonuyla)."""
         row0 = self.create_button_row()
-        kdv = self.add_labeled_entry(row0, "İndirilecek KDV:",
+        kdv = self.add_labeled_entry(row0, "İndirilecek KDV",
                                      self.setting("kdv_hesaplari", checks.VARSAYILAN_KDV_HESAPLARI), 90,
                                      "boş: KDV kontrolü yok")
-        tev = self.add_labeled_entry(row0, "Tevkifat:",
+        tev = self.add_labeled_entry(row0, "Tevkifat",
                                      self.setting("tevkifat_hesaplari", checks.VARSAYILAN_TEVKIFAT_HESAPLARI), 90,
                                      "boş: tevkifat kontrolü yok")
-        gelir = self.add_labeled_entry(row0, "Gelir (satış):",
+        gelir = self.add_labeled_entry(row0, "Gelir (satış)",
                                        self.setting("gelir_hesaplari", checks.VARSAYILAN_GELIR_HESAPLARI), 120,
                                        "boş: satış mutabakatı yok")
-        skdv = self.add_labeled_entry(row0, "Hesaplanan KDV:",
+        skdv = self.add_labeled_entry(row0, "Hesaplanan KDV",
                                       self.setting("satis_kdv_hesaplari", checks.VARSAYILAN_SATIS_KDV_HESAPLARI), 70,
                                       "boş: yok")
         row = self.create_button_row()
         kodlar = self.add_labeled_entry(
-            row, "Maliyete Eklenen Vergi Kodları:",
+            row, "Maliyete eklenen vergi kodları",
             self.setting("maliyet_vergi_kodlari", checks.VARSAYILAN_MALIYET_VERGI_KODLARI), 420,
             "boş: vergi eklenmez (ör. 9077 ÖTV II, 0071 ÖTV I, 4080 ÖİV)")
 
@@ -618,7 +741,7 @@ class AuditApp(ctk.CTk):
             kodlar.delete(0, "end")
             kodlar.insert(0, checks.VARSAYILAN_MALIYET_VERGI_KODLARI)
 
-        ctk.CTkButton(row, text="Varsayılan", width=90, height=28, command=reset).pack(side="left")
+        tbutton(row, "Varsayılan", reset, kind="secondary", width=96, height=32).pack(side="left")
         return {"maliyet": kodlar, "kdv": kdv, "tevkifat": tev, "gelir": gelir, "satis_kdv": skdv}
 
     def read_vergi_ayarlari(self, w):
@@ -647,162 +770,300 @@ class AuditApp(ctk.CTk):
 
     # ------------------------------------------------------------------ iskelet
     def create_sidebar(self):
-        self.sidebar = ctk.CTkFrame(self, width=250, corner_radius=0, fg_color=("gray85", "#1e1e21"))
+        self.sidebar = ctk.CTkFrame(self, width=264, corner_radius=0, fg_color=C["sidebar"], border_width=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(10, weight=1)
+        self.sidebar.grid_propagate(False)
+        self.sidebar.grid_columnconfigure(0, weight=1)
 
-        logo_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        logo_frame.grid(row=0, column=0, padx=20, pady=(30, 20), sticky="ew")
-        ctk.CTkLabel(logo_frame, text="DENETİM", font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
-                     text_color=("#1f538d", "#3a7ebf")).pack()
-        ctk.CTkLabel(logo_frame, text="Masaüstü Analiz Sistemi", font=ctk.CTkFont(family="Segoe UI", size=12)).pack()
+        logo = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        logo.grid(row=0, column=0, padx=22, pady=(26, 18), sticky="ew")
+        ctk.CTkLabel(logo, text="◆", font=ctk.CTkFont(family=FONT, size=22), text_color=C["accent"]) \
+            .pack(side="left", padx=(0, 10))
+        names = ctk.CTkFrame(logo, fg_color="transparent")
+        names.pack(side="left")
+        ctk.CTkLabel(names, text="Denetim", font=ctk.CTkFont(family=FONT, size=19, weight="bold"),
+                     text_color=C["text"], anchor="w").pack(fill="x")
+        ctk.CTkLabel(names, text="Finansal analiz sistemi", font=self.font_small, text_color=C["muted"],
+                     anchor="w").pack(fill="x")
 
-        firm_frame = ctk.CTkFrame(self.sidebar, corner_radius=8, fg_color=("gray78", "#2a2a2e"))
-        firm_frame.grid(row=1, column=0, padx=20, pady=(0, 14), sticky="ew")
-        ctk.CTkLabel(firm_frame, text="AKTİF FİRMA", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
-                     text_color=("gray35", "gray60"), anchor="w").pack(fill="x", padx=12, pady=(8, 0))
-        self.firm_name_label = ctk.CTkLabel(firm_frame, text="", font=ctk.CTkFont(family="Segoe UI", size=14,
-                                                                                    weight="bold"),
-                                            anchor="w", justify="left", wraplength=190)
-        self.firm_name_label.pack(fill="x", padx=12)
-        self.firm_info_label = ctk.CTkLabel(firm_frame, text="", font=ctk.CTkFont(family="Segoe UI", size=11),
-                                            text_color=("gray30", "gray65"), anchor="w", justify="left",
-                                            wraplength=190)
-        self.firm_info_label.pack(fill="x", padx=12)
-        ctk.CTkButton(firm_frame, text="🏢  Firma Seç / Yönet", command=self.show_firms_frame, height=30,
-                      font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold")) \
-            .pack(fill="x", padx=12, pady=(6, 10))
+        # Aktif firma kartı (tıklanınca firmalar ekranı)
+        firm = ctk.CTkFrame(self.sidebar, fg_color=C["card_alt"], corner_radius=14, border_width=1,
+                            border_color=C["border"], cursor="hand2")
+        firm.grid(row=1, column=0, padx=16, pady=(0, 18), sticky="ew")
+        self.firm_avatar = ctk.CTkLabel(firm, text="?", width=40, height=40, corner_radius=12,
+                                        font=ctk.CTkFont(family=FONT, size=14, weight="bold"))
+        self.firm_avatar.grid(row=0, column=0, rowspan=2, padx=(12, 10), pady=12)
+        self.firm_name_label = ctk.CTkLabel(firm, text="", font=ctk.CTkFont(family=FONT, size=13, weight="bold"),
+                                            anchor="w", justify="left", wraplength=150)
+        self.firm_name_label.grid(row=0, column=1, sticky="sw", pady=(12, 0), padx=(0, 10))
+        self.firm_info_label = ctk.CTkLabel(firm, text="", font=ctk.CTkFont(family=FONT, size=11),
+                                            text_color=C["muted"], anchor="w", justify="left", wraplength=150)
+        self.firm_info_label.grid(row=1, column=1, sticky="nw", pady=(0, 12), padx=(0, 10))
+        firm.grid_columnconfigure(1, weight=1)
+        for w in (firm, self.firm_avatar, self.firm_name_label, self.firm_info_label):
+            w.bind("<Button-1>", lambda _e: self.show_firms_frame())
 
-        def create_nav_button(row, text, command, fg_color=None, hover_color=None):
-            btn = ctk.CTkButton(self.sidebar, text=text, command=command, font=self.font_btn,
-                                height=42, corner_radius=8, anchor="w",
-                                fg_color=fg_color if fg_color else "transparent",
-                                text_color=("black", "white") if not fg_color else "white",
-                                hover_color=hover_color if hover_color else ("gray70", "#2c2c30"),
-                                border_width=1 if not fg_color else 0,
-                                border_color=("#3a7ebf", "#3a7ebf") if not fg_color else ("gray85", "#1e1e21"))
-            btn.grid(row=row, column=0, padx=20, pady=6, sticky="ew")
-            return btn
+        nav = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        nav.grid(row=2, column=0, padx=12, sticky="new")
+        groups = [
+            (None, [("home", "⌂", "Ana Sayfa", self.show_welcome_screen)]),
+            ("VERİ YÜKLE", [("xml", "⇪", "e-Fatura (XML)", self.show_import_frame),
+                            ("excel", "▦", "Fatura (Excel)", self.show_excel_import_frame),
+                            ("yevmiye", "☰", "Yevmiye (Excel)", self.show_journal_import_frame)]),
+            ("ANALİZ", [("fiyat", "↗", "Fiyat Risk Analizi", self.show_analysis_frame),
+                        ("mutabakat", "⚖", "Muhasebe Mutabakatı", self.show_reconciliation_frame),
+                        ("rapor", "✓", "Genel Denetim Raporu", self.show_audit_frame)]),
+            ("YÖNETİM", [("firmalar", "◫", "Firmalar", self.show_firms_frame),
+                         ("ayarlar", "⚙", "Firma Ayarları", self.show_settings_frame)]),
+        ]
+        for title, items in groups:
+            if title:
+                ctk.CTkLabel(nav, text=title, font=self.font_section, text_color=C["faint"], anchor="w") \
+                    .pack(fill="x", padx=12, pady=(14, 4))
+            for key, icon, text, command in items:
+                btn = ctk.CTkButton(nav, text=f"{icon}   {text}", command=command, anchor="w", height=38,
+                                    corner_radius=10, fg_color="transparent", hover_color=C["card_alt"],
+                                    text_color=C["text"], font=ctk.CTkFont(family=FONT, size=13))
+                btn.pack(fill="x", pady=1)
+                self.nav_buttons[key] = btn
 
-        create_nav_button(2, "📂  UBL-TR (XML) Yükle", self.show_import_frame)
-        create_nav_button(3, "📊  Fatura (Excel) Yükle", self.show_excel_import_frame)
-        create_nav_button(4, "📒  Yevmiye (Excel) Yükle", self.show_journal_import_frame,
-                          fg_color=("#d4a000", "#b58900"), hover_color=("#b58900", "#856500"))
-        create_nav_button(5, "🔍  Fiyat Risk Analizi", self.show_analysis_frame,
-                          fg_color=("#2a70bf", "#1f538d"), hover_color=("#1f538d", "#14375e"))
-        create_nav_button(6, "⚖️  Muhasebe Mutabakatı", self.show_reconciliation_frame,
-                          fg_color=("#e83e8f", "#d33682"), hover_color=("#d33682", "#a32a65"))
-        create_nav_button(7, "🧾  Genel Denetim Raporu", self.show_audit_frame,
-                          fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
-        create_nav_button(8, "⚙️  Firma ve Veri Ayarları", self.show_settings_frame)
+        self.sidebar.grid_rowconfigure(3, weight=1)
+        bottom = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        bottom.grid(row=4, column=0, padx=22, pady=(10, 18), sticky="ew")
+        dark = ctk.get_appearance_mode() == "Dark"
+        self.switch_var = ctk.StringVar(value="on" if dark else "off")
+        self.mode_switch = ctk.CTkSwitch(bottom, text="Karanlık mod" if dark else "Aydınlık mod",
+                                         command=self.toggle_mode, variable=self.switch_var, onvalue="on",
+                                         offvalue="off", font=self.font_small, text_color=C["muted"],
+                                         progress_color=C["accent"])
+        self.mode_switch.pack(anchor="w")
+        ctk.CTkLabel(bottom, text="Sürüm 2.1  ·  Çevrimdışı", font=ctk.CTkFont(family=FONT, size=11),
+                     text_color=C["faint"], anchor="w").pack(fill="x", pady=(8, 0))
 
-        self.switch_var = ctk.StringVar(value="on")
-        self.mode_switch = ctk.CTkSwitch(self.sidebar, text="Karanlık Mod", command=self.toggle_mode,
-                                         variable=self.switch_var, onvalue="on", offvalue="off",
-                                         font=ctk.CTkFont(size=12, weight="bold"))
-        self.mode_switch.grid(row=11, column=0, padx=20, pady=(10, 5), sticky="s")
-
-        ctk.CTkLabel(self.sidebar, text="V 2.0 (Çevrimdışı)", font=ctk.CTkFont(size=10), text_color="gray") \
-            .grid(row=12, column=0, pady=(0, 20), sticky="s")
+    def set_active_nav(self, key):
+        """Yan menüde bulunulan sayfayı vurgular."""
+        for k, btn in self.nav_buttons.items():
+            active = k == key
+            btn.configure(fg_color=C["accent_soft"] if active else "transparent",
+                          text_color=C["accent"] if active else C["text"],
+                          font=ctk.CTkFont(family=FONT, size=13, weight="bold" if active else "normal"))
 
     def toggle_mode(self):
-        if self.switch_var.get() == "on":
-            ctk.set_appearance_mode("Dark")
-            self.mode_switch.configure(text="Karanlık Mod")
-        else:
-            ctk.set_appearance_mode("Light")
-            self.mode_switch.configure(text="Aydınlık Mod")
+        mode = "Dark" if self.switch_var.get() == "on" else "Light"
+        ctk.set_appearance_mode(mode)
+        self.mode_switch.configure(text="Karanlık mod" if mode == "Dark" else "Aydınlık mod")
+        self.registry.set_pref("appearance", mode)
         self.apply_tree_style()
 
     def apply_tree_style(self):
         """Bulgu tablosunun (ttk.Treeview) renklerini aydınlık / karanlık moda uyarlar."""
-        dark = ctk.get_appearance_mode() == "Dark"
-        bg, fg, head_bg, sel = ("#18181a", "#d4d4d4", "#2a2a2e", "#1f538d") if dark else \
-            ("white", "black", "gray85", "#3a7ebf")
+        i = 1 if ctk.get_appearance_mode() == "Dark" else 0
+        bg, fg, head_bg = C["card"][i], C["text"][i], C["card_alt"][i]
+        zebra, sel = ("#F9FAFC", "#DCE2FB") if i == 0 else ("#22252D", "#2E3654")
         style = ttk.Style(self)
         style.theme_use("clam")
-        style.configure("Bulgu.Treeview", background=bg, fieldbackground=bg, foreground=fg, rowheight=24,
+        style.configure("Bulgu.Treeview", background=bg, fieldbackground=bg, foreground=fg, rowheight=30,
                         borderwidth=0, font=self.tree_font)
-        style.configure("Bulgu.Treeview.Heading", background=head_bg, foreground=fg, relief="flat",
-                        font=self.tree_heading_font)
-        style.map("Bulgu.Treeview", background=[("selected", sel)], foreground=[("selected", "white")])
+        style.configure("Bulgu.Treeview.Heading", background=head_bg, foreground=C["muted"][i], relief="flat",
+                        font=self.tree_heading_font, padding=(6, 6), borderwidth=0)
+        style.map("Bulgu.Treeview", background=[("selected", sel)], foreground=[("selected", fg)])
         style.layout("Bulgu.Treeview", [("Bulgu.Treeview.treearea", {"sticky": "nswe"})])  # Kenarlık yok
-        style.map("Bulgu.Treeview.Heading", background=[("active", "#3a7ebf" if dark else "gray75")])
+        style.map("Bulgu.Treeview.Heading", background=[("active", C["accent_soft"][i])])
         for panel in (getattr(self, "bulgu_paneli", None),):
             if panel is not None and panel.winfo_exists():
-                panel.tree.tag_configure("sorun_yok", foreground="#7f8c8d" if dark else "gray45")
-                panel.tree.tag_configure("duzeltme", foreground="#e5a50a" if dark else "#a66f00")
+                panel.tree.tag_configure("cift", background=bg)
+                panel.tree.tag_configure("tek", background=zebra)
+                panel.tree.tag_configure("sorun_yok", foreground=C["faint"][i])
+                panel.tree.tag_configure("duzeltme", foreground=C["warning"][i])
                 panel.tree.tag_configure("acik", foreground=fg)
 
     def create_main_frame(self):
-        self.main_frame = ctk.CTkFrame(self, corner_radius=12, fg_color=("gray95", "#242427"))
-        self.main_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
+        self.main_frame = ctk.CTkFrame(self, corner_radius=0, fg_color=C["bg"])
+        self.main_frame.grid(row=0, column=1, sticky="nsew")
 
-    def clear_main_frame(self):
+    def clear_main_frame(self, nav=None):
         for widget in self.main_frame.winfo_children():
             widget.destroy()
+        self._row_parent = None
+        self.set_active_nav(nav)
 
-    def create_header(self, title, subtitle):
-        header_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        header_frame.pack(fill="x", padx=40, pady=(30, 15))
-        ctk.CTkLabel(header_frame, text=title, font=self.font_title, anchor="w",
-                     text_color=("black", "white")).pack(fill="x")
-        ctk.CTkLabel(header_frame, text=subtitle, font=self.font_subtitle, text_color=("gray30", "gray70"),
-                     anchor="w", justify="left", wraplength=900).pack(fill="x", pady=(5, 0))
-        return header_frame
+    def create_header(self, title, subtitle, details=None):
+        """Sayfa başlığı; uzun açıklama (details) 'Nasıl çalışır?' bağlantısıyla açılıp kapanır."""
+        header = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        header.pack(fill="x", padx=36, pady=(28, 14))
+        ctk.CTkLabel(header, text=title, font=self.font_title, anchor="w", text_color=C["text"]).pack(fill="x")
+        line = ctk.CTkFrame(header, fg_color="transparent")
+        line.pack(fill="x", pady=(4, 0))
+        ctk.CTkLabel(line, text=subtitle, font=self.font_subtitle, text_color=C["muted"], anchor="w",
+                     justify="left", wraplength=880).pack(side="left")
+        if details:
+            box = ctk.CTkLabel(header, text=details, font=self.font_small, text_color=C["muted"], anchor="w",
+                               justify="left", wraplength=920, fg_color=C["card_alt"], corner_radius=10)
+            link = ctk.CTkLabel(line, text="ⓘ  Nasıl çalışır?", font=ctk.CTkFont(family=FONT, size=12,
+                                                                                    weight="bold"),
+                                text_color=C["accent"], cursor="hand2")
+            link.pack(side="left", padx=(12, 0))
 
-    def create_button_row(self):
-        frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        frame.pack(fill="x", padx=40, pady=8)
+            def toggle(_e=None):
+                if box.winfo_ismapped():
+                    box.pack_forget()
+                else:
+                    box.pack(fill="x", pady=(10, 0), ipadx=12, ipady=10)
+            link.bind("<Button-1>", toggle)
+        return header
+
+    def create_button_row(self, parent=None):
+        frame = ctk.CTkFrame(parent or self._row_parent or self.main_frame, fg_color="transparent")
+        inside = (parent or self._row_parent) is not None
+        frame.pack(fill="x", padx=(20 if inside else 36), pady=(6 if inside else 8))
         return frame
 
-    def add_button(self, parent, text, command, fg_color=None, hover_color=None):
-        kwargs = {}
-        if fg_color:
-            kwargs.update(fg_color=fg_color, hover_color=hover_color)
-        btn = ctk.CTkButton(parent, text=text, font=self.font_btn, height=40, command=command, **kwargs)
+    def settings_card(self, summary):
+        """Katlanabilir 'Kontrol Ayarları' kartı. Kart açıkken create_button_row satırları kartın içine eklenir;
+        end_settings_card() ile kapatılır. Kapalıyken yalnızca özet satırı görünür."""
+        box = card(self.main_frame)
+        box.pack(fill="x", padx=36, pady=(0, 10))
+        head = ctk.CTkFrame(box, fg_color="transparent", cursor="hand2")
+        head.pack(fill="x", padx=18, pady=12)
+        arrow = ctk.CTkLabel(head, text="▸", font=ctk.CTkFont(family=FONT, size=14), text_color=C["muted"],
+                             width=16)
+        arrow.pack(side="left")
+        title = ctk.CTkLabel(head, text="Kontrol ayarları", font=ctk.CTkFont(family=FONT, size=13, weight="bold"),
+                             text_color=C["text"])
+        title.pack(side="left", padx=(6, 12))
+        ozet = ctk.CTkLabel(head, text=summary, font=self.font_small, text_color=C["muted"], anchor="w")
+        ozet.pack(side="left", fill="x", expand=True)
+        hint = ctk.CTkLabel(head, text="Düzenle", font=ctk.CTkFont(family=FONT, size=12, weight="bold"),
+                            text_color=C["accent"])
+        hint.pack(side="right")
+        body = ctk.CTkFrame(box, fg_color="transparent")
+
+        def toggle(_e=None):
+            if body.winfo_ismapped():
+                body.pack_forget()
+                arrow.configure(text="▸")
+                hint.configure(text="Düzenle")
+            else:
+                body.pack(fill="x", pady=(0, 12))
+                arrow.configure(text="▾")
+                hint.configure(text="Gizle")
+        for w in (head, arrow, title, ozet, hint):
+            w.bind("<Button-1>", toggle)
+        self._row_parent = body
+        self.settings_toggle = toggle
+        return box
+
+    def settings_group(self, text):
+        """Ayar kartı içinde küçük grup başlığı."""
+        ctk.CTkLabel(self._row_parent, text=text.upper(), font=self.font_section, text_color=C["faint"],
+                     anchor="w").pack(fill="x", padx=20, pady=(10, 0))
+
+    def ayar_ozeti(self, fiyat=False):
+        """Kapalı ayar kartında gösterilen tek satırlık özet."""
+        parts = [self.setting("period_type", "Aylık")]
+        if fiyat:
+            parts.append(f"eşik %{self.setting('threshold', '15')}")
+        acc = self.setting("accounts", "")
+        parts.append(f"hesaplar {acc}" if acc else "hesap kodu girilmedi")
+        parts.append(f"tolerans {self.setting('tolerance', '0.01')} TL / "
+                     f"%{self.setting('kur_toleransi', f'{checks.KUR_TOLERANSI_VARSAYILAN:g}')} kur")
+        return "  ·  ".join(parts)
+
+    def end_settings_card(self):
+        self._row_parent = None
+
+    def add_button(self, parent, text, command, kind="primary", **_legacy):
+        """Temalı buton ekler. Eski çağrılardaki fg_color / hover_color yok sayılır; görünümü `kind` belirler."""
+        btn = tbutton(parent, text, command, kind=kind, height=40)
         btn.pack(side="left", padx=(0, 10))
         return btn
 
     def add_labeled_entry(self, parent, label, value, width=120, placeholder=""):
-        ctk.CTkLabel(parent, text=label, font=self.font_label).pack(side="left", padx=(0, 6))
-        entry = ctk.CTkEntry(parent, width=width, placeholder_text=placeholder)
+        ctk.CTkLabel(parent, text=label, font=self.font_small, text_color=C["muted"]).pack(side="left",
+                                                                                          padx=(0, 6))
+        entry = ctk.CTkEntry(parent, width=width, height=34, corner_radius=10, border_width=1,
+                             border_color=C["border"], fg_color=C["input"], text_color=C["text"],
+                             placeholder_text=placeholder)
         if value not in (None, ""):
             entry.insert(0, str(value))
         entry.pack(side="left", padx=(0, 18))
         return entry
 
     def add_period_menu(self, parent):
-        ctk.CTkLabel(parent, text="Dönem:", font=self.font_label).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(parent, text="Dönem:", font=self.font_small, text_color=C["muted"]).pack(side="left",
+                                                                                             padx=(0, 6))
         var = ctk.StringVar(value=self.setting("period_type", "Aylık"))
-        ctk.CTkOptionMenu(parent, values=PERIOD_TYPES, variable=var, width=120,
-                          command=lambda v: self.db.set_setting("period_type", v)).pack(side="left", padx=(0, 18))
+        ctk.CTkSegmentedButton(parent, values=PERIOD_TYPES, variable=var, height=34, corner_radius=10,
+                               font=self.font_small, selected_color=C["accent"], selected_hover_color=C["accent_hover"],
+                               unselected_color=C["card_alt"], unselected_hover_color=C["accent_soft"],
+                               fg_color=C["card_alt"], text_color=(C["text"][0], C["text"][1]),
+                               command=lambda v: self.db.set_setting("period_type", v)) \
+            .pack(side="left", padx=(0, 18))
         return var
 
-    def create_console_box(self, parent=None, padx=40, pady=(10, 30)):
-        box = ctk.CTkTextbox(parent or self.main_frame, font=self.font_console, corner_radius=8, wrap="none",
-                             border_width=1, border_color=("gray75", "#3c3c3c"),
-                             fg_color=("white", "#18181a"), text_color=("black", "#d4d4d4"))
+    def create_console_box(self, parent=None, padx=36, pady=(6, 28), title=None):
+        outer = parent or self.main_frame
+        if parent is None:
+            outer = card(self.main_frame)
+            outer.pack(fill="both", expand=True, padx=padx, pady=pady)
+            if title:
+                ctk.CTkLabel(outer, text=title, font=ctk.CTkFont(family=FONT, size=13, weight="bold"),
+                             text_color=C["text"], anchor="w").pack(fill="x", padx=18, pady=(14, 0))
+            padx, pady = 10, 10
+        box = ctk.CTkTextbox(outer, font=self.font_console, corner_radius=10, wrap="none", border_width=0,
+                             fg_color=C["card"], text_color=C["text"])
         box.pack(fill="both", expand=True, padx=padx, pady=pady)
-        box.tag_config("hata", foreground="#e5534b")
-        box.tag_config("uyari", foreground="#d4a000")
-        box.tag_config("ok", foreground="#3fb950")
-        box.tag_config("baslik", foreground="#3a7ebf")
+        box.tag_config("hata", foreground=C["danger"][1] if ctk.get_appearance_mode() == "Dark" else C["danger"][0])
+        box.tag_config("uyari", foreground=C["warning"][1] if ctk.get_appearance_mode() == "Dark"
+                       else C["warning"][0])
+        box.tag_config("ok", foreground=C["success"][1] if ctk.get_appearance_mode() == "Dark" else C["success"][0])
+        box.tag_config("baslik", foreground=C["accent"][1] if ctk.get_appearance_mode() == "Dark"
+                       else C["accent"][0])
         return box
 
     def create_results_area(self):
         """Sonuç alanı: "Bulgular" sekmesinde inceleme işaretlenebilen tablo, "Özet (metin)" sekmesinde konsol.
         Dönüş: (BulguPaneli, konsol kutusu)"""
-        tabs = ctk.CTkTabview(self.main_frame, corner_radius=8, height=240)
-        tabs.pack(fill="both", expand=True, padx=40, pady=(4, 20))
+        tabs = ctk.CTkTabview(self.main_frame, corner_radius=14, height=260, fg_color="transparent",
+                              segmented_button_fg_color=C["card_alt"], segmented_button_selected_color=C["accent"],
+                              segmented_button_selected_hover_color=C["accent_hover"],
+                              segmented_button_unselected_color=C["card_alt"],
+                              segmented_button_unselected_hover_color=C["accent_soft"], text_color=C["text"],
+                              anchor="w")
+        tabs.pack(fill="both", expand=True, padx=30, pady=(0, 18))
         tabs.add("Bulgular")
         tabs.add("Özet (metin)")
         self.results_tabs = tabs
         self.bulgu_paneli = BulguPaneli(self, tabs.tab("Bulgular"))
         self.bulgu_paneli.pack(fill="both", expand=True)
         self.apply_tree_style()
-        box = self.create_console_box(tabs.tab("Özet (metin)"), padx=0, pady=0)
+        wrap = card(tabs.tab("Özet (metin)"))
+        wrap.pack(fill="both", expand=True)
+        box = self.create_console_box(wrap, padx=10, pady=10)
         return self.bulgu_paneli, box
+
+    def upload_card(self, icon, title, desc):
+        """Veri yükleme ekranlarının büyük kartı. Dönüş: butonların ekleneceği satır."""
+        box = card(self.main_frame)
+        box.pack(fill="x", padx=36, pady=(0, 12))
+        ctk.CTkLabel(box, text=icon, width=56, height=56, corner_radius=16, fg_color=C["accent_soft"],
+                     text_color=C["accent"], font=ctk.CTkFont(family=FONT, size=24)).pack(side="left", padx=22,
+                                                                                         pady=22)
+        texts = ctk.CTkFrame(box, fg_color="transparent")
+        texts.pack(side="left", fill="x", expand=True, pady=18)
+        ctk.CTkLabel(texts, text=title, font=ctk.CTkFont(family=FONT, size=15, weight="bold"),
+                     text_color=C["text"], anchor="w").pack(fill="x")
+        ctk.CTkLabel(texts, text=desc, font=self.font_small, text_color=C["muted"], anchor="w") \
+            .pack(fill="x", pady=(2, 10))
+        row = ctk.CTkFrame(texts, fg_color="transparent")
+        row.pack(fill="x")
+        return row
+
+    def page_actions(self):
+        """Sayfanın ana işlem butonları satırı."""
+        row = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        row.pack(fill="x", padx=36, pady=(4, 12))
+        return row
 
     def show_results(self, sections):
         """Bulgu tablosunu doldurur; bulgu bölümü yoksa (veri yok uyarısı) metin özetine geçer.
@@ -902,112 +1163,175 @@ class AuditApp(ctk.CTk):
             self.log(box, f"\n[UYARILAR] ({len(res.warnings)})", "uyari")
             self.log_messages(box, res.warnings, "uyari")
 
+    def stat_card(self, parent, value, label, color="text"):
+        box = card(parent)
+        ctk.CTkLabel(box, text=value, font=ctk.CTkFont(family=FONT, size=26, weight="bold"), text_color=C[color],
+                     anchor="w").pack(fill="x", padx=20, pady=(16, 0))
+        ctk.CTkLabel(box, text=label, font=self.font_small, text_color=C["muted"], anchor="w") \
+            .pack(fill="x", padx=20, pady=(0, 16))
+        return box
+
     def show_welcome_screen(self):
         if self.db is None:
             return self.show_no_firm_screen(welcome=True)
-        self.clear_main_frame()
-        self.create_header(f"Sisteme Hoş Geldiniz — {self.firm.title}",
-                           "Sol menüden yapmak istediğiniz işlemi seçin. Verileriniz yerel diskte (offline) "
-                           "ve her firma için ayrı bir veritabanında saklanmaktadır.\n\nÖnerilen akış: Firma Seç → "
-                           "Fatura (XML/Excel) → Yevmiye → Genel Denetim Raporu")
+        self.clear_main_frame("home")
+        f = self.firm
+        self.create_header(f"Merhaba, {f.title}",
+                           "Verileriniz bu bilgisayarda, her firma için ayrı bir veritabanında saklanır."
+                           + ("" if f.vkn else "  ·  VKN girilmedi: alıcı VKN ve satış kontrolleri atlanır."))
         counts = self.db.counts()
-        box = self.create_console_box()
-        self.log(box, f"> Aktif firma: {self.firm.display_name}" + (f"  |  VKN: {self.firm.vkn}" if self.firm.vkn
-                                                                    else "  |  VKN girilmedi (alıcı VKN kontrolü "
-                                                                         "atlanır)"))
-        self.log(box, f"> Kayıtlı fatura: {counts['fatura']}  |  Fatura satırı: {counts['fatura_satiri']}  |  "
-                      f"Yevmiye satırı: {counts['yevmiye_satiri']}  |  Yüklenen dosya: {counts['dosya']}")
+        invoices = self.db.get_invoices_df()
+        n_satis = len(checks.satis_faturalari(invoices, f.vkn)) if not invoices.empty else 0
+        n_alis = counts["fatura"] - n_satis
+
+        stats = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        stats.pack(fill="x", padx=36, pady=(0, 14))
+        for i, (value, label) in enumerate([
+                (f"{n_alis:,}".replace(",", "."), "Alış faturası"),
+                (f"{n_satis:,}".replace(",", "."), "Satış faturası"),
+                (f"{counts['yevmiye_satiri']:,}".replace(",", "."), "Yevmiye satırı"),
+                (f"{counts['dosya']:,}".replace(",", "."), "Yüklenen dosya")]):
+            self.stat_card(stats, value, label).grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 12, 0))
+            stats.grid_columnconfigure(i, weight=1, uniform="stat")
+
+        steps = card(self.main_frame)
+        steps.pack(fill="x", padx=36, pady=(0, 14))
+        ctk.CTkLabel(steps, text="Denetim akışı", font=ctk.CTkFont(family=FONT, size=15, weight="bold"),
+                     text_color=C["text"], anchor="w").pack(fill="x", padx=22, pady=(18, 2))
+        ctk.CTkLabel(steps, text="Adımları sırayla tamamlayın; rapor tüm kontrolleri tek seferde çalıştırır.",
+                     font=self.font_small, text_color=C["muted"], anchor="w").pack(fill="x", padx=22, pady=(0, 8))
+        has_inv, has_jou = counts["fatura"] > 0, counts["yevmiye_satiri"] > 0
+        for n, (done, title, desc, actions) in enumerate([
+                (has_inv, "Faturaları yükleyin", "e-Fatura / e-Arşiv XML (ZIP veya klasör) ya da Excel",
+                 [("XML Yükle", self.show_import_frame), ("Excel Yükle", self.show_excel_import_frame)]),
+                (has_jou, "Yevmiye kayıtlarını yükleyin", "Muhasebe programından alınan Excel dökümü",
+                 [("Yevmiye Yükle", self.show_journal_import_frame)]),
+                (False, "Genel denetim raporunu çalıştırın", "Tüm kontroller, bulgular ve Excel raporu",
+                 [("Raporu Aç", self.show_audit_frame)])], start=1):
+            row = ctk.CTkFrame(steps, fg_color=C["card_alt"], corner_radius=12)
+            row.pack(fill="x", padx=16, pady=4)
+            ctk.CTkLabel(row, text="✓" if done else str(n), width=32, height=32, corner_radius=16,
+                         fg_color=C["success_soft"] if done else C["accent_soft"],
+                         text_color=C["success"] if done else C["accent"],
+                         font=ctk.CTkFont(family=FONT, size=13, weight="bold")).pack(side="left", padx=14, pady=12)
+            texts = ctk.CTkFrame(row, fg_color="transparent")
+            texts.pack(side="left", fill="x", expand=True)
+            ctk.CTkLabel(texts, text=title, font=ctk.CTkFont(family=FONT, size=13, weight="bold"),
+                         text_color=C["text"], anchor="w").pack(fill="x")
+            ctk.CTkLabel(texts, text=desc + ("  ·  tamamlandı" if done else ""), font=self.font_small,
+                         text_color=C["muted"], anchor="w").pack(fill="x")
+            for i, (label, cmd) in enumerate(reversed(actions)):
+                tbutton(row, label, cmd, kind="secondary" if (done or i) else "primary", height=34) \
+                    .pack(side="right", padx=(0, 14 if i == 0 else 8))
+        row.pack_configure(pady=(4, 16))
 
     def show_no_firm_screen(self, welcome=False):
-        self.clear_main_frame()
+        self.clear_main_frame("home" if welcome else None)
         has_firms = bool(self.registry.list_firms())
-        title = "Sisteme Hoş Geldiniz" if welcome else "Önce Bir Firma Seçin"
-        text = ("Veri yükleme ve analiz ekranları, seçili firmanın verileriyle çalışır. "
-                + ("Devam etmek için listeden bir firma seçin ya da yeni bir firma oluşturun."
-                   if has_firms else "Başlamak için ilk firmanızı oluşturun. Her firmanın verileri ayrı saklanır."))
+        title = "Hoş geldiniz" if welcome else "Önce bir firma seçin"
+        text = ("Veri yükleme ve analiz ekranları seçili firmanın verileriyle çalışır."
+                if has_firms else "Başlamak için ilk firmanızı oluşturun. Her firmanın verileri ayrı saklanır.")
         self.create_header(title, text)
-        row = self.create_button_row()
+        box = card(self.main_frame)
+        box.pack(fill="x", padx=36, pady=(4, 0))
+        ctk.CTkLabel(box, text="◫", font=ctk.CTkFont(family=FONT, size=40), text_color=C["accent"]) \
+            .pack(pady=(28, 4))
+        ctk.CTkLabel(box, text="Firma seçilmedi", font=ctk.CTkFont(family=FONT, size=16, weight="bold"),
+                     text_color=C["text"]).pack()
+        ctk.CTkLabel(box, text="Denetleyeceğiniz firmayı seçin ya da yeni bir firma ekleyin.", font=self.font_small,
+                     text_color=C["muted"]).pack(pady=(2, 14))
+        row = ctk.CTkFrame(box, fg_color="transparent")
+        row.pack(pady=(0, 28))
         if has_firms:
-            self.add_button(row, "🏢  Firma Seç", self.show_firms_frame)
-        self.add_button(row, "➕  Yeni Firma", lambda: self.show_firm_form(None),
-                        fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
+            tbutton(row, "Firma Seç", self.show_firms_frame, kind="secondary").pack(side="left", padx=6)
+        tbutton(row, "＋  Yeni Firma", lambda: self.show_firm_form(None)).pack(side="left", padx=6)
 
     def show_firms_frame(self):
-        self.clear_main_frame()
-        self.create_header("Firmalar",
-                           "Denetlediğiniz firmalar. Her firmanın faturaları, yevmiye kayıtları ve analiz ayarları "
-                           "ayrı bir veritabanında tutulur. Son seçilen firma bir sonraki açılışta otomatik açılır.")
-        row = self.create_button_row()
-        self.add_button(row, "➕  Yeni Firma", lambda: self.show_firm_form(None),
-                        fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
+        self.clear_main_frame("firmalar")
+        self.create_header("Firmalar", "Her firmanın faturaları, yevmiye kayıtları ve ayarları ayrı saklanır. "
+                                       "Son seçilen firma açılışta otomatik açılır.")
+        row = self.page_actions()
+        self.add_button(row, "＋  Yeni Firma", lambda: self.show_firm_form(None))
         firms = self.registry.list_firms()
         if not firms:
             ctk.CTkLabel(self.main_frame, text="Henüz kayıtlı firma yok.", font=self.font_label,
-                         text_color=("gray30", "gray70"), anchor="w").pack(fill="x", padx=40, pady=10)
+                         text_color=C["muted"], anchor="w").pack(fill="x", padx=36, pady=10)
             return
-        table = ctk.CTkScrollableFrame(self.main_frame, corner_radius=8, fg_color=("white", "#18181a"))
-        table.pack(fill="both", expand=True, padx=40, pady=(10, 30))
-        table.grid_columnconfigure(1, weight=1)
-        bold = ctk.CTkFont(family="Segoe UI", size=13, weight="bold")
-        for col, text in enumerate(["Kod", "Unvan", "VKN/TCKN", "Sektör", "Oluşturulma", ""]):
-            ctk.CTkLabel(table, text=text, font=bold, anchor="w").grid(row=0, column=col, padx=8, pady=(6, 4),
-                                                                      sticky="w")
-        for i, firm in enumerate(firms, start=1):
+        lst = ctk.CTkScrollableFrame(self.main_frame, fg_color="transparent", corner_radius=0)
+        lst.pack(fill="both", expand=True, padx=26, pady=(0, 20))
+        for firm in firms:
             active = self.firm is not None and firm.code == self.firm.code
-            color = ("#1f538d", "#3a7ebf") if active else ("black", "#d4d4d4")
-            values = [firm.code, firm.title + ("  (aktif)" if active else ""), firm.vkn or "-", firm.sector or "-",
-                      (firm.created_at or "")[:10]]
-            for col, text in enumerate(values):
-                ctk.CTkLabel(table, text=text, font=bold if active else self.font_label, text_color=color,
-                             anchor="w").grid(row=i, column=col, padx=8, pady=3, sticky="w")
-            btns = ctk.CTkFrame(table, fg_color="transparent")
-            btns.grid(row=i, column=5, padx=8, pady=3, sticky="e")
-            small = dict(height=28, width=80, font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"))
-            ctk.CTkButton(btns, text="Seç", state="disabled" if active else "normal",
-                          command=lambda c=firm.code: self.select_firm(c), **small).pack(side="left", padx=3)
-            ctk.CTkButton(btns, text="Düzenle", fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"),
-                          command=lambda c=firm.code: self.show_firm_form(c), **small).pack(side="left", padx=3)
-            ctk.CTkButton(btns, text="Sil", fg_color=("#c62828", "#b71c1c"), hover_color=("#b71c1c", "#7f0000"),
-                          command=lambda c=firm.code: self.delete_firm(c), **small).pack(side="left", padx=3)
+            item = card(lst, border_color=C["accent"] if active else C["border"])
+            item.pack(fill="x", padx=10, pady=5)
+            ctk.CTkLabel(item, text=initials(firm.title), width=44, height=44, corner_radius=12,
+                         fg_color=C["accent_soft"], text_color=C["accent"],
+                         font=ctk.CTkFont(family=FONT, size=15, weight="bold")).pack(side="left", padx=16, pady=14)
+            texts = ctk.CTkFrame(item, fg_color="transparent")
+            texts.pack(side="left", fill="x", expand=True)
+            name = ctk.CTkFrame(texts, fg_color="transparent")
+            name.pack(fill="x")
+            ctk.CTkLabel(name, text=firm.title, font=ctk.CTkFont(family=FONT, size=14, weight="bold"),
+                         text_color=C["text"], anchor="w").pack(side="left")
+            if active:
+                ctk.CTkLabel(name, text="Aktif", font=ctk.CTkFont(family=FONT, size=11, weight="bold"),
+                             fg_color=C["accent_soft"], text_color=C["accent"], corner_radius=8, height=20,
+                             width=46).pack(side="left", padx=10)
+            meta = "  ·  ".join(x for x in [firm.code, f"VKN {firm.vkn}" if firm.vkn else "VKN yok",
+                                            firm.sector, (firm.created_at or "")[:10]] if x)
+            ctk.CTkLabel(texts, text=meta, font=self.font_small, text_color=C["muted"], anchor="w").pack(fill="x")
+            btns = ctk.CTkFrame(item, fg_color="transparent")
+            btns.pack(side="right", padx=14)
+            small = dict(height=32, width=84)
+            tbutton(btns, "Sil", lambda c=firm.code: self.delete_firm(c), kind="danger", **small) \
+                .pack(side="right", padx=3)
+            tbutton(btns, "Düzenle", lambda c=firm.code: self.show_firm_form(c), kind="secondary", **small) \
+                .pack(side="right", padx=3)
+            if not active:
+                tbutton(btns, "Seç", lambda c=firm.code: self.select_firm(c), **small).pack(side="right", padx=3)
 
     def show_firm_form(self, code=None):
         """Yeni firma (code=None) ya da mevcut firmayı düzenleme formu."""
         firm = self.registry.get(code) if code else None
-        self.clear_main_frame()
+        self.clear_main_frame("firmalar")
         if firm:
-            self.create_header("Firma Bilgilerini Düzenle",
-                               "Firma VKN/TCKN'si, alıcısı bu firma olmayan XML faturaların raporlanmasında "
-                               "kullanılır. Kod değiştirilse de firmanın verileri korunur.")
+            self.create_header("Firma bilgilerini düzenle",
+                               "Kod değiştirilse de firmanın verileri korunur.")
         else:
-            self.create_header("Yeni Firma",
-                               "Firma kodu kısa ve benzersiz bir addır (ör. ABC_INSAAT). VKN/TCKN girilirse alıcı "
-                               "VKN kontrolü yapılır. Sektör isteğe bağlıdır.")
-        form = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        form.pack(fill="x", padx=40, pady=8)
+            self.create_header("Yeni firma", "Kod kısa ve benzersiz bir addır (ör. ABC_INSAAT).")
+        box = card(self.main_frame)
+        box.pack(fill="x", padx=36, pady=(0, 10))
+        form = ctk.CTkFrame(box, fg_color="transparent")
+        form.pack(fill="x", padx=24, pady=20)
         entries = {}
-        fields = [("code", "Firma Kodu / Kısa Ad: *", firm.code if firm else "", "ör. ABC_INSAAT"),
-                  ("title", "Unvan: *", firm.title if firm else "", "ör. ABC İnşaat Taahhüt A.Ş."),
-                  ("vkn", "VKN/TCKN:", firm.vkn if firm else "", "10 veya 11 hane")]
-        for r, (key, label, value, placeholder) in enumerate(fields):
-            ctk.CTkLabel(form, text=label, font=self.font_label, anchor="w").grid(row=r, column=0, padx=(0, 12),
-                                                                                  pady=6, sticky="w")
-            entry = ctk.CTkEntry(form, width=360, placeholder_text=placeholder)
+        fields = [("code", "Firma kodu / kısa ad *", firm.code if firm else "", "ör. ABC_INSAAT", ""),
+                  ("title", "Unvan *", firm.title if firm else "", "ör. ABC İnşaat Taahhüt A.Ş.", ""),
+                  ("vkn", "VKN / TCKN", firm.vkn if firm else "", "10 veya 11 hane",
+                   "Satış faturalarını tanımak ve alıcı VKN kontrolü için gerekir.")]
+        for r, (key, label, value, placeholder, hint) in enumerate(fields):
+            ctk.CTkLabel(form, text=label, font=self.font_small, text_color=C["muted"], anchor="w") \
+                .grid(row=r * 2, column=0, sticky="w", pady=(8 if r else 0, 2))
+            entry = ctk.CTkEntry(form, width=420, height=38, corner_radius=10, border_width=1,
+                                 border_color=C["border"], fg_color=C["input"], text_color=C["text"],
+                                 placeholder_text=placeholder)
             if value:
                 entry.insert(0, value)
-            entry.grid(row=r, column=1, pady=6, sticky="w")
+            entry.grid(row=r * 2 + 1, column=0, sticky="w")
+            if hint:
+                ctk.CTkLabel(form, text=hint, font=ctk.CTkFont(family=FONT, size=11), text_color=C["faint"]) \
+                    .grid(row=r * 2 + 1, column=1, sticky="w", padx=14)
             entries[key] = entry
-        ctk.CTkLabel(form, text="Sektör:", font=self.font_label, anchor="w").grid(row=3, column=0, padx=(0, 12),
-                                                                                  pady=6, sticky="w")
-        sector = ctk.CTkComboBox(form, width=360, values=SECTORS)
+        ctk.CTkLabel(form, text="Sektör", font=self.font_small, text_color=C["muted"], anchor="w") \
+            .grid(row=6, column=0, sticky="w", pady=(8, 2))
+        sector = ctk.CTkComboBox(form, width=420, height=38, corner_radius=10, border_width=1,
+                                 border_color=C["border"], fg_color=C["input"], button_color=C["accent"],
+                                 values=SECTORS)
         sector.set(firm.sector if firm else "")
-        sector.grid(row=3, column=1, pady=6, sticky="w")
+        sector.grid(row=7, column=0, sticky="w")
         entries["sector"] = sector
         self.firm_form_entries = entries
-        row = self.create_button_row()
-        self.add_button(row, "💾 Kaydet", lambda: self.save_firm_form(firm.code if firm else None),
-                        fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
-        self.add_button(row, "Vazgeç", self.show_firms_frame,
-                        fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"))
+        row = self.page_actions()
+        self.add_button(row, "Kaydet", lambda: self.save_firm_form(firm.code if firm else None))
+        self.add_button(row, "Vazgeç", self.show_firms_frame, kind="secondary")
 
     def save_firm_form(self, code=None):
         values = {k: e.get().strip() for k, e in self.firm_form_entries.items()}
@@ -1054,15 +1378,17 @@ class AuditApp(ctk.CTk):
     # ------------------------------------------------------------------ XML YÜKLEME
     @requires_firm
     def show_import_frame(self):
-        self.clear_main_frame()
-        self.create_header("UBL-TR Fatura Aktarımı",
-                           "e-Fatura / e-Arşiv XML dosyalarını (veya XML içeren ZIP arşivlerini) seçin. "
-                           "Birden fazla dosya seçebilir ya da bir klasörün tamamını aktarabilirsiniz.")
-        row = self.create_button_row()
-        self.add_button(row, "XML / ZIP Dosyası Seç", self.select_xml_files)
-        self.add_button(row, "Klasör Seç", self.select_xml_folder)
-        self.xml_log_box = self.create_console_box()
-        self.log(self.xml_log_box, "> Sistem hazır. İşlem bekliyor...")
+        self.clear_main_frame("xml")
+        self.create_header("e-Fatura aktarımı", "e-Fatura / e-Arşiv XML dosyalarını sisteme işleyin.",
+                           "Birden fazla XML dosyası, içinde XML bulunan ZIP arşivleri ya da bir klasörün tamamı "
+                           "seçilebilir. Daha önce yüklenmiş dosyalar ve aynı tedarikçinin aynı numaralı faturaları "
+                           "atlanır. Satıcı VKN'si firma VKN'si olan faturalar satış faturası sayılır.")
+        row = self.upload_card("⇪", "XML veya ZIP dosyalarını seçin", "GİB portalından ya da entegratörden "
+                               "indirilen gelen / giden faturalar")
+        self.add_button(row, "Dosya Seç", self.select_xml_files)
+        self.add_button(row, "Klasör Seç", self.select_xml_folder, kind="secondary")
+        self.xml_log_box = self.create_console_box(title="İşlem günlüğü")
+        self.log(self.xml_log_box, "Hazır. Dosya seçilmesi bekleniyor.")
 
     def select_xml_files(self):
         paths = filedialog.askopenfilenames(title="UBL-TR XML Seç",
@@ -1125,22 +1451,22 @@ class AuditApp(ctk.CTk):
     # ------------------------------------------------------------------ EXCEL FATURA YÜKLEME
     @requires_firm
     def show_excel_import_frame(self):
-        self.clear_main_frame()
-        self.create_header("Excel'den Toplu Fatura Aktarımı",
+        self.clear_main_frame("excel")
+        self.create_header("Fatura aktarımı (Excel)", "XML'i olmayan faturaları Excel şablonuyla yükleyin.",
                            "Zorunlu sütunlar: Fatura_No, Tarih, Tedarikci_VKN, Tedarikci_Ad, Urun_Adi, Miktar, Fiyat\n"
                            "İsteğe bağlı: Birim, Iskonto, KDV_Orani, Para_Birimi, Kur, OTV_Tutari, Fatura_Tipi (SATIS, "
                            "IADE, TEVKIFAT, ISTISNA, IHRACAT ...), Tevkifat_Orani (4/10), Yon (Alış / Satış).  Fiyat "
                            "KDV HARİÇ birim fiyattır. Aynı Fatura_No + VKN'li satırlar tek faturanın kalemleri olarak "
                            "kaydedilir. Satış satırlarında Tedarikci_VKN / Tedarikci_Ad alanlarına müşteri yazılır.")
-        row = self.create_button_row()
+        row = self.upload_card("▦", "Fatura Excel dosyasını seçin", "Sütunlar otomatik tanınır; tanınmazsa "
+                               "eşleme penceresi açılır")
         self.add_button(row, "Excel Dosyası Seç", self.select_and_read_excel)
-        self.add_button(row, "🧭 Sütunları Eşle", lambda: self.select_and_read_excel(force_wizard=True),
-                        fg_color=("#2f7d4f", "#2a6b45"), hover_color=("#25633f", "#1f5034"))
-        self.add_button(row, "📄 Boş Şablon İndir", lambda: self.save_template(importers.invoice_template(),
-                                                                              "Fatura_Sablonu.xlsx"),
-                        fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"))
-        self.excel_log_box = self.create_console_box()
-        self.log(self.excel_log_box, "> Sistem hazır. İşlem bekliyor...")
+        self.add_button(row, "Sütunları Eşle", lambda: self.select_and_read_excel(force_wizard=True),
+                        kind="secondary")
+        self.add_button(row, "Boş Şablon İndir", lambda: self.save_template(importers.invoice_template(),
+                                                                           "Fatura_Sablonu.xlsx"), kind="ghost")
+        self.excel_log_box = self.create_console_box(title="İşlem günlüğü")
+        self.log(self.excel_log_box, "Hazır. Dosya seçilmesi bekleniyor.")
 
     def select_and_read_excel(self, force_wizard=False):
         file_path = filedialog.askopenfilename(title="Fatura Excel Seç", filetypes=[("Excel Dosyaları", "*.xlsx")])
@@ -1174,23 +1500,22 @@ class AuditApp(ctk.CTk):
     # ------------------------------------------------------------------ YEVMİYE YÜKLEME
     @requires_firm
     def show_journal_import_frame(self):
-        self.clear_main_frame()
-        self.create_header("Muhasebe Yevmiye Kayıtları Yükle",
+        self.clear_main_frame("yevmiye")
+        self.create_header("Yevmiye aktarımı", "Muhasebe programından alınan yevmiye dökümünü yükleyin.",
                            "Zorunlu sütunlar: Tarih, Belge_No, Hesap_Kodu ve (Borc + Alacak) ya da Tutar.  "
                            "İsteğe bağlı: Aciklama.  Borç/Alacak kullanılırsa tutar = Borç − Alacak olarak saklanır.\n"
                            "Başlık satırı ve yaygın sütun adları (Evrak No, Borç Tutarı, Fiş Tarihi ...) otomatik "
                            "bulunur; bulunamazsa sütun eşleme penceresi açılır ve eşleme firma için hatırlanır. "
                            "Belge numarası ayrı bir sütunda olmalıdır (açıklamanın içinden okunmaz).")
-        row = self.create_button_row()
-        self.add_button(row, "Yevmiye Excel Seç", self.select_and_read_journal,
-                        fg_color=("#d4a000", "#b58900"), hover_color=("#b58900", "#856500"))
-        self.add_button(row, "🧭 Sütunları Eşle", lambda: self.select_and_read_journal(force_wizard=True),
-                        fg_color=("#2f7d4f", "#2a6b45"), hover_color=("#25633f", "#1f5034"))
-        self.add_button(row, "📄 Boş Şablon İndir", lambda: self.save_template(importers.journal_template(),
-                                                                              "Yevmiye_Sablonu.xlsx"),
-                        fg_color=("gray55", "gray30"), hover_color=("gray45", "gray25"))
-        self.journal_log_box = self.create_console_box()
-        self.log(self.journal_log_box, "> Sistem hazır. İşlem bekliyor...")
+        row = self.upload_card("☰", "Yevmiye Excel dosyasını seçin", "Belge numarası ayrı bir sütunda olmalıdır "
+                               "(Evrak No / Belge No)")
+        self.add_button(row, "Yevmiye Excel Seç", self.select_and_read_journal)
+        self.add_button(row, "Sütunları Eşle", lambda: self.select_and_read_journal(force_wizard=True),
+                        kind="secondary")
+        self.add_button(row, "Boş Şablon İndir", lambda: self.save_template(importers.journal_template(),
+                                                                           "Yevmiye_Sablonu.xlsx"), kind="ghost")
+        self.journal_log_box = self.create_console_box(title="İşlem günlüğü")
+        self.log(self.journal_log_box, "Hazır. Dosya seçilmesi bekleniyor.")
 
     def select_and_read_journal(self, force_wizard=False):
         file_path = filedialog.askopenfilename(title="Yevmiye Excel Seç", filetypes=[("Excel Dosyaları", "*.xlsx")])
@@ -1221,23 +1546,26 @@ class AuditApp(ctk.CTk):
     # ------------------------------------------------------------------ RİSK ANALİZİ
     @requires_firm
     def show_analysis_frame(self):
-        self.clear_main_frame()
-        self.create_header("Fatura Bazlı Risk ve Anomali Analizi",
+        self.clear_main_frame("fiyat")
+        self.create_header("Fiyat risk analizi", "Aynı ürünün dönem ortalamasından belirgin sapan alış fiyatları.",
                            "Her dönem içinde aynı ürün + birim + para birimi için ağırlıklı ortalama birim fiyat "
                            "(AOBF, belge para biriminde, KDV hariç) hesaplanır; eşiği aşan sapmalar listelenir. İade "
                            "faturaları, (seçiliyse) tevkifatlı faturalar ve adında hariç kelime geçen hizmet / hakediş "
                            "kalemleri analize alınmaz. Dönemde en az alım sayısından az alımı olan üründe sapma "
                            "riskli sayılmaz, bilgi olarak gösterilir.")
+        self.settings_card(self.ayar_ozeti(fiyat=True))
+        self.settings_group("Genel")
         opts = self.create_button_row()
         self.period_var = self.add_period_menu(opts)
-        self.threshold_entry = self.add_labeled_entry(opts, "Sapma Eşiği (%):", self.setting("threshold", "15"), 80)
+        self.threshold_entry = self.add_labeled_entry(opts, "Sapma eşiği (%)", self.setting("threshold", "15"), 70)
+        self.settings_group("Analiz dışı bırakılanlar")
         self.analysis_rules = self.add_fiyat_kural_rows()
-        row = self.create_button_row()
-        self.add_button(row, "▶ Analizi Çalıştır", self.run_analysis)
-        self.add_button(row, "📥 Excel'e Aktar", self.export_to_excel,
-                        fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
+        self.end_settings_card()
+        row = self.page_actions()
+        self.add_button(row, "▶  Analizi Çalıştır", self.run_analysis)
+        self.add_button(row, "Excel'e Aktar", self.export_to_excel, kind="secondary")
         self.analysis_panel, self.result_box = self.create_results_area()
-        self.log(self.result_box, "> Rapor bekleniyor...")
+        self.log(self.result_box, "Analiz bekleniyor.")
 
     def run_analysis(self):
         threshold = self.read_threshold(self.threshold_entry)
@@ -1294,8 +1622,9 @@ class AuditApp(ctk.CTk):
     # ------------------------------------------------------------------ MUHASEBE MUTABAKAT
     @requires_firm
     def show_reconciliation_frame(self):
-        self.clear_main_frame()
-        self.create_header("Fatura ve Yevmiye Mutabakatı",
+        self.clear_main_frame("mutabakat")
+        self.create_header("Muhasebe mutabakatı", "Faturaların yevmiye kayıtlarıyla tutar, hesap, dönem ve "
+                           "vergi karşılaştırması.",
                            "Faturaların KDV HARİÇ tutarları, girdiğiniz hesap kodlarındaki yevmiye kayıtlarıyla "
                            "karşılaştırılır. Fatura no ↔ belge no sırasıyla: Tam eşleşme, Seri+Sıra (ABC123, "
                            "ABC-2024-123 gibi kısaltılmış yazımlar) ve son çare olarak tek adaylı Tutar+Tarih "
@@ -1306,24 +1635,29 @@ class AuditApp(ctk.CTk):
                            "amortisman, mahsup ...) listelenmez. Alış faturalarının KDV'si (191) ve tevkifatı (360), "
                            "satış faturaları (satıcı VKN'si firma VKN'si olanlar) gelir hesapları ve hesaplanan KDV "
                            "(391) ile ayrıca karşılaştırılır.")
+        self.settings_card(self.ayar_ozeti())
+        self.settings_group("Genel")
         opts = self.create_button_row()
-        self.accounts_entry = self.add_labeled_entry(opts, "Hesap Kodları:", self.setting("accounts", ""), 220,
-                                                     "ör. 153, 770")
+        self.accounts_entry = self.add_labeled_entry(opts, "Maliyet / stok hesapları", self.setting("accounts", ""),
+                                                     220, "ör. 153, 770")
         self.recon_period_var = self.add_period_menu(opts)
         self.tolerance_entry, self.recon_kur_entry = self.add_tolerans_row()
+        self.settings_group("Faturasız kayıt kontrolü")
         self.recon_onek_entry, self.recon_haric_var = self.add_haric_onek_row()
+        self.settings_group("Vergi ve satış hesapları")
         self.recon_vergi = self.add_vergi_rows()
-        row = self.create_button_row()
-        self.add_button(row, "▶ Mutabakat Kontrolü Yap", self.run_reconciliation,
-                        fg_color=("#e83e8f", "#d33682"), hover_color=("#d33682", "#a32a65"))
-        self.add_button(row, "📥 Excel'e Aktar", lambda: self.export_sections_dialog(
+        self.end_settings_card()
+        if not self.setting("accounts", ""):
+            self.settings_toggle()  # Hesap kodu girilmeden mutabakat yapılamaz; ayarlar açık gelir
+        row = self.page_actions()
+        self.add_button(row, "▶  Mutabakatı Çalıştır", self.run_reconciliation)
+        self.add_button(row, "Excel'e Aktar", lambda: self.export_sections_dialog(
             self.recon_panel.export_sections(self.with_satis_sheets(self.with_kur_sheet(
                 self.with_haric_sheet(self.recon_sections, self.recon_haric, self.recon_haric_var), self.recon_kur),
                 self.recon_ek, self.recon_haric_var)),
-            "Mutabakat_Raporu.xlsx"),
-                        fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
+            "Mutabakat_Raporu.xlsx"), kind="secondary")
         self.recon_panel, self.recon_box = self.create_results_area()
-        self.log(self.recon_box, "> Mutabakat bekleniyor...")
+        self.log(self.recon_box, "Mutabakat bekleniyor.")
 
     def run_reconciliation(self):
         accounts = self.read_accounts(self.accounts_entry)
@@ -1430,33 +1764,38 @@ class AuditApp(ctk.CTk):
     # ------------------------------------------------------------------ GENEL DENETİM RAPORU
     @requires_firm
     def show_audit_frame(self):
-        self.clear_main_frame()
-        self.create_header("Genel Denetim Raporu",
+        self.clear_main_frame("rapor")
+        self.create_header("Genel denetim raporu", "Tüm kontroller tek tıkla; bulguları inceleyip işaretleyin.",
                            "Tüm kontroller tek seferde çalıştırılır: fiyat anomalileri (alışlar), alış mutabakatı "
                            "(muhasebeleşmemiş, yanlış hesap, tutar farkı — ÖTV gibi maliyete eklenen vergiler dahil —, "
                            "dönem farkı, faturasız kayıt, KDV (191) ve tevkifat (360)), satış mutabakatı (gelir "
                            "hesapları, hesaplanan KDV, faturasız gelir), olası mükerrer faturalar, fatura hesaplama "
                            "tutarsızlıkları ve alıcı VKN kontrolü. Satıcı VKN'si firma VKN'si olan faturalar satıştır.")
+        self.settings_card(self.ayar_ozeti(fiyat=True))
+        self.settings_group("Genel")
         opts = self.create_button_row()
         self.audit_period_var = self.add_period_menu(opts)
-        self.audit_threshold = self.add_labeled_entry(opts, "Sapma Eşiği (%):", self.setting("threshold", "15"), 70)
-        self.audit_accounts = self.add_labeled_entry(opts, "Hesap Kodları:", self.setting("accounts", ""), 180,
-                                                     "ör. 153, 770")
+        self.audit_threshold = self.add_labeled_entry(opts, "Sapma eşiği (%)", self.setting("threshold", "15"), 60)
+        self.audit_accounts = self.add_labeled_entry(opts, "Maliyet / stok hesapları", self.setting("accounts", ""),
+                                                     180, "ör. 153, 770")
         self.audit_tolerance, self.audit_kur = self.add_tolerans_row()
+        self.settings_group("Fiyat analizi")
         self.audit_rules = self.add_fiyat_kural_rows()
+        self.settings_group("Faturasız kayıt kontrolü")
         self.audit_onek_entry, self.audit_haric_var = self.add_haric_onek_row()
+        self.settings_group("Vergi ve satış hesapları")
         self.audit_vergi = self.add_vergi_rows()
-        row = self.create_button_row()
-        self.add_button(row, "▶ Tüm Kontrolleri Çalıştır", self.run_full_audit,
-                        fg_color=("#388e3c", "#2e7d32"), hover_color=("#2e7d32", "#1b5e20"))
-        self.add_button(row, "📥 Raporu Excel'e Aktar", lambda: self.export_sections_dialog(
+        self.end_settings_card()
+        row = self.page_actions()
+        self.add_button(row, "▶  Tüm Kontrolleri Çalıştır", self.run_full_audit)
+        self.add_button(row, "Raporu Excel'e Aktar", lambda: self.export_sections_dialog(
             self.audit_panel.export_sections(self.with_satis_sheets(self.with_fiyat_haric_sheet(
                 self.with_kur_sheet(self.with_haric_sheet(self.audit_sections, self.audit_haric, self.audit_haric_var),
                                     self.audit_kur_farki),
                 self.audit_fiyat_haric, self.audit_rules), self.audit_ek, self.audit_haric_var)),
-            "Denetim_Raporu.xlsx"))
+            "Denetim_Raporu.xlsx"), kind="secondary")
         self.audit_panel, self.audit_box = self.create_results_area()
-        self.log(self.audit_box, "> Rapor bekleniyor...")
+        self.log(self.audit_box, "Rapor bekleniyor.")
 
     def run_full_audit(self):
         threshold = self.read_threshold(self.audit_threshold)
@@ -1515,21 +1854,39 @@ class AuditApp(ctk.CTk):
     # ------------------------------------------------------------------ AYARLAR
     @requires_firm
     def show_settings_frame(self):
-        self.clear_main_frame()
-        self.create_header("Firma ve Veri Ayarları",
-                           "Firma VKN'si girilirse, alıcısı bu firma olmayan XML faturalar raporlanır. "
-                           "Analiz ayarları (eşik, hesap kodları, tolerans, dönem, faturasız kontrolde hariç tutulan "
-                           "belge no önekleri, fiyat analizinin hariç tutma kuralları ve kelimeleri) bu firmaya özel "
-                           "saklanır.")
-        info = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        info.pack(fill="x", padx=40, pady=(10, 8))
-        f = self.firm
-        ctk.CTkLabel(info, font=self.font_label, justify="left", anchor="w",
-                     text=f"Firma kodu: {f.code}\nUnvan: {f.title}\nVKN/TCKN: {f.vkn or '(girilmedi)'}\n"
-                          f"Sektör: {f.sector or '-'}\nOluşturulma: {f.created_at or '-'}").pack(fill="x")
-        row = self.create_button_row()
-        self.add_button(row, "✏️  Firma Bilgilerini Düzenle", lambda: self.show_firm_form(self.firm.code))
+        self.clear_main_frame("ayarlar")
+        self.create_header("Firma ayarları", "Bu firmaya özel bilgiler, kontrol ayarları ve veriler.")
+        page = ctk.CTkScrollableFrame(self.main_frame, fg_color="transparent", corner_radius=0)
+        page.pack(fill="both", expand=True, padx=26, pady=(0, 16))
 
+        def section(title, desc):
+            box = card(page)
+            box.pack(fill="x", padx=10, pady=6)
+            ctk.CTkLabel(box, text=title, font=ctk.CTkFont(family=FONT, size=15, weight="bold"),
+                         text_color=C["text"], anchor="w").pack(fill="x", padx=20, pady=(16, 0))
+            ctk.CTkLabel(box, text=desc, font=self.font_small, text_color=C["muted"], anchor="w", justify="left",
+                         wraplength=860).pack(fill="x", padx=20, pady=(2, 6))
+            body = ctk.CTkFrame(box, fg_color="transparent")
+            body.pack(fill="x", pady=(0, 12))
+            self._row_parent = body
+            return body
+
+        f = self.firm
+        section("Firma bilgileri", "VKN; satış faturalarını tanımak ve alıcı VKN kontrolü için kullanılır.")
+        info = self.create_button_row()
+        for label, value in [("Kod", f.code), ("Unvan", f.title), ("VKN / TCKN", f.vkn or "girilmedi"),
+                             ("Sektör", f.sector or "-"), ("Oluşturulma", (f.created_at or "-")[:10])]:
+            col = ctk.CTkFrame(info, fg_color="transparent")
+            col.pack(side="left", padx=(0, 28))
+            ctk.CTkLabel(col, text=label, font=ctk.CTkFont(family=FONT, size=11), text_color=C["faint"],
+                         anchor="w").pack(fill="x")
+            ctk.CTkLabel(col, text=value, font=ctk.CTkFont(family=FONT, size=13, weight="bold"),
+                         text_color=C["text"], anchor="w").pack(fill="x")
+        row = self.create_button_row()
+        self.add_button(row, "Bilgileri Düzenle", lambda: self.show_firm_form(self.firm.code), kind="secondary")
+
+        section("Faturasız kayıt kontrolü", "Belge no'su bu öneklerle başlayan kayıtlar (bordro, amortisman, "
+                                            "mahsup ...) faturasız kayıt listesine alınmaz.")
         onek_entry, _ = self.add_haric_onek_row(with_excel_option=False)
 
         def save_onekler():
@@ -1537,8 +1894,10 @@ class AuditApp(ctk.CTk):
             messagebox.showinfo("Tamam", f"Hariç önek listesi kaydedildi ({n} önek)." if n else
                                 "Hariç önek listesi boş kaydedildi; faturasız kontrolde önek filtresi uygulanmayacak.")
 
-        self.add_button(onek_entry.master, "💾 Kaydet", save_onekler)
+        self.add_button(onek_entry.master, "Kaydet", save_onekler)
 
+        section("Vergi ve satış hesapları", "KDV (191), tevkifat (360), gelir (600–602) ve hesaplanan KDV (391) "
+                                            "mutabakatında kullanılan hesaplar; maliyete eklenen vergi türleri.")
         vergi_w = self.add_vergi_rows()
 
         def save_vergi():
@@ -1547,18 +1906,16 @@ class AuditApp(ctk.CTk):
                                          f", tevkifat hesapları: {', '.join(v.tevkifat_hesaplari) or '-'}, maliyete "
                                          f"eklenen vergi kodu: {len(v.maliyet_kodlari)}).")
 
-        self.add_button(vergi_w["maliyet"].master, "💾 Kaydet", save_vergi)
+        self.add_button(vergi_w["maliyet"].master, "Kaydet", save_vergi)
 
         counts = self.db.counts()
-        info2 = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        info2.pack(fill="x", padx=40, pady=(25, 8))
-        ctk.CTkLabel(info2, font=self.font_label, justify="left", anchor="w",
-                     text=f"Kayıtlı fatura: {counts['fatura']}    Fatura satırı: {counts['fatura_satiri']}    "
-                          f"Yevmiye satırı: {counts['yevmiye_satiri']}    Yüklenen dosya: {counts['dosya']}") \
-            .pack(fill="x")
+        section("Veriler", f"{counts['fatura']} fatura  ·  {counts['fatura_satiri']} fatura satırı  ·  "
+                           f"{counts['yevmiye_satiri']} yevmiye satırı  ·  {counts['dosya']} yüklenen dosya")
         row2 = self.create_button_row()
-        self.add_button(row2, "🗑  Tüm Verileri Sil", self.clear_data,
-                        fg_color=("#c62828", "#b71c1c"), hover_color=("#b71c1c", "#7f0000"))
+        self.add_button(row2, "Bu Firmanın Tüm Verilerini Sil", self.clear_data, kind="danger")
+        ctk.CTkLabel(row2, text="Yalnızca bu firma etkilenir; işlem geri alınamaz.", font=self.font_small,
+                     text_color=C["faint"]).pack(side="left", padx=6)
+        self._row_parent = None
 
     def clear_data(self):
         if not messagebox.askyesno("Onay", f"'{self.firm.title}' firmasının tüm fatura ve yevmiye kayıtları "
