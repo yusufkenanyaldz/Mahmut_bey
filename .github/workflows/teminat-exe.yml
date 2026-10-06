@@ -1,0 +1,97 @@
+name: Teminat .exe derle
+
+on:
+  push:
+    paths: ["teminat_cozum/**", ".github/workflows/teminat-exe.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: teminat_cozum
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: teminat_cozum/requirements*.txt
+
+      - name: Bağımlılıkları kur
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt pyinstaller
+
+      - name: Testleri çalıştır
+        run: python -m pytest -q
+
+      - name: .exe derle
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name TeminatCozum
+          --collect-data pdfminer
+          --collect-all pypdfium2 --collect-all pypdfium2_raw
+          --collect-data docx
+          --paths .
+          TeminatCozum.py
+
+      - name: Duman testi — gerçek PDF ile uçtan uca taslak
+        shell: pwsh
+        run: |
+          $hedef = Join-Path $env:RUNNER_TEMP 'duman'
+          python tests/duman_verisi.py $hedef
+          $arg = "taslak --ayar $hedef\ayar.yaml --kok $hedef\ORNEK --donem 2026-03"
+          $p = Start-Process -FilePath dist\TeminatCozum.exe -ArgumentList $arg -Wait -PassThru
+          Get-Content dist\teminat_son_calisma.log -Encoding utf8
+          if ($p.ExitCode -ne 0) { Write-Error "Taslak üretimi çıkış kodu: $($p.ExitCode)"; exit 1 }
+          $dosyalar = Get-ChildItem -Path "$hedef\ORNEK\2026" -Recurse -File | Where-Object { $_.DirectoryName -like '*CLAUDE TASLAK' }
+          $dosyalar | ForEach-Object { Write-Host $_.FullName }
+          if (($dosyalar | Where-Object { $_.Extension -in '.docx', '.xlsx', '.html' }).Count -ne 3) {
+            Write-Error "Taslak / kontrol listesi dosyaları oluşmadı"; exit 1
+          }
+
+      - name: Duman testi — pencere açılıyor mu
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\TeminatCozum.exe -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) { Write-Error "Uygulama açılışta kapandı (çıkış kodu $($p.ExitCode))"; exit 1 }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "Pencere 20 saniye boyunca açık kaldı."
+
+      - name: Yapıtı yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: TeminatCozum-windows
+          path: |
+            teminat_cozum/dist/TeminatCozum.exe
+            teminat_cozum/firmalar/ornek/ayar.yaml
+          retention-days: 30
+
+      - name: Sürüm (release) olarak yayınla
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: teminat-son-surum
+          name: Teminat Çözüm Raporu Taslak Programı – son sürüm
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          body: |
+            Windows için tek dosyalık program: **TeminatCozum.exe**
+            Derlenen commit: ${{ github.sha }} (${{ github.ref_name }})
+
+            - Kurulum gerekmez. .exe'yi bir klasöre koyun; firma ayar dosyasını yanına `firmalar\<firma>\ayar.yaml`
+              olarak kaydedin (örnek: `ayar.yaml`). Çift tıklayınca pencere açılır (ilk açılış 10-20 saniye sürebilir).
+            - Ofis raporları `.doc` ise LibreOffice kurulu olmalı (`.docx` raporlar için gerekmez).
+            - Program internet kullanmaz; mükellef dosyaları bilgisayardan çıkmaz. Çıktılar ayın klasöründeki
+              `CLAUDE TASLAK` klasörüne yazılır, orijinal dosyalara dokunulmaz.
+            - Windows "Bilinmeyen yayıncı" uyarısı verirse: "Ek bilgi" → "Yine de çalıştır".
+          files: |
+            teminat_cozum/dist/TeminatCozum.exe
+            teminat_cozum/firmalar/ornek/ayar.yaml

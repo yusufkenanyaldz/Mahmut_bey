@@ -29,7 +29,9 @@ Ayrıntılı gereksinimler `PROJE_TALIMATI.md` dosyasındadır; mükellef bilgis
 - `teminat/rapor/safha.py` — 3-4-3 EKLİ seçimi (Word'den bağımsız)
 - `teminat/kontroller/` — kontrol listesi, sayısal ve belge kontrolleri, xlsx/html çıktısı
 - `teminat/karsilastir.py`, `teminat/geriye_donuk.py` — öğrenme döngüsü
-- Komutlar: `python -m teminat {taslak,karsilastir,denetle,geriye-donuk} --help`
+- `teminat/arayuz.py` — tkinter penceresi; `TeminatCozum.py` — .exe giriş noktası
+- Komutlar: `python -m teminat {taslak,karsilastir,denetle,geriye-donuk,arayuz} --help`
+- Windows .exe: `.github/workflows/teminat-exe.yml` (PyInstaller, gerçek PDF'li duman testi, "teminat-son-surum" sürümü)
 
 ## Yol haritası
 `PROJE_TALIMATI.md` → "8. Yapılacaklar". Aşama 1'in kod kısmı tamam; kalan: gerçek verilerle geriye dönük test

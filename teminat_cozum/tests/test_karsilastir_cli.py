@@ -103,3 +103,26 @@ def test_geriye_donuk(tmp_path):
     assert d[Donem(2026, 3)].durum == 'tamam' and d[Donem(2026, 3)].tutar_farki == 0
     assert (tmp_path / 'GDT' / 'GERİYE DÖNÜK TEST.xlsx').exists()
     assert not (kok / '2026/03 MART/CLAUDE TASLAK').exists()     # girdi klasörüne yazılmadı
+
+
+def test_exe_giris_noktasi_komut_satiri(tmp_path, monkeypatch, capsys):
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location('TeminatCozum', Path(__file__).resolve().parents[1] / 'TeminatCozum.py')
+    giris = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(giris)
+    p = S.sablon_docx(tmp_path / 'r.docx', S.Senaryo(Donem(2026, 2)))
+    monkeypatch.setattr('sys.argv', ['TeminatCozum.exe', 'denetle', str(p)])
+    assert giris.main() == 1
+    assert 'Karşıt inceleme oranı' in capsys.readouterr().out
+
+
+def test_arayuz_yuklenir():
+    pytest.importorskip('tkinter')
+    from teminat import arayuz
+    q = __import__('queue').Queue()
+    y = arayuz._KuyrukYazici(q)
+    y.write('a')
+    y.reconfigure(errors='replace')
+    assert q.get_nowait() == 'a'
+    assert (arayuz.program_klasoru() / 'teminat').is_dir()

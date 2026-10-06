@@ -111,3 +111,18 @@ def test_girdiler_birden_fazla_aday_uyarir(tmp_path):
     (g / 'yüklenilen tutanak çalışması - Kopya.xls').write_bytes((g / 'yüklenilen tutanak çalışması.xls').read_bytes())
     notlar = girdileri_oku(g).notlar
     assert any('birden fazla' in n[2] for n in notlar)
+
+
+def test_gercek_pdf_okunur(tmp_path):
+    """pdfplumber ile gerçek bir PDF'ten (reportlab ile üretilmiş) beyanname okunur."""
+    pytest.importorskip('reportlab')
+    if not S.yazi_tipi():
+        pytest.skip('Türkçe karakterli yazı tipi yok')
+    from conftest import GERCEK_PDF_METNI
+    s = S.Senaryo(Donem(2026, 3), k448=(300_000.0, '20', '5/10', 30_000.0), i318=(6_000_000.0, 0.0, 0.0))
+    p = S.kdv1_pdf(tmp_path / 'KDV 1.pdf', s)
+    k = kdv1.kdv1_metinden(GERCEK_PDF_METNI(p))
+    beklenen = kdv1.kdv1_metinden(S.kdv1_metni(s))
+    for alan in ('matrah_toplam', 'hesaplanan', 'yurtici_alim', 'sorumlu', 'ithal', 'devreden_onceki', 'indirim_toplam',
+                 'iade_gereken', 'sonraki_devreden', 'r701', 'yurtici', 'k410', 'k448', 'oranlar', 'i318', 'donem'):
+        assert k[alan] == beklenen[alan], alan

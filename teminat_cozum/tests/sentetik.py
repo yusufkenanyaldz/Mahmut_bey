@@ -502,3 +502,35 @@ def senaryo_kopya(s, **degisiklik):
     for k, v in degisiklik.items():
         setattr(t, k, v)
     return t
+
+
+# ---------------------------------------------------------------- gerçek PDF (reportlab) — .exe duman testi için
+YAZI_TIPLERI = [r'C:\Windows\Fonts\arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                '/System/Library/Fonts/Supplemental/Arial.ttf']
+
+
+def yazi_tipi():
+    return next((p for p in YAZI_TIPLERI if Path(p).is_file()), None)
+
+
+def kdv1_pdf(path, s: Senaryo):
+    """KDV 1 metnini satır satır gerçek bir PDF'e yazar (Türkçe karakterli TTF yazı tipiyle)."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen import canvas
+    yt = yazi_tipi()
+    if not yt:
+        raise RuntimeError('Türkçe karakterli yazı tipi bulunamadı')
+    pdfmetrics.registerFont(TTFont('Sentetik', yt))
+    c = canvas.Canvas(str(path), pagesize=A4)
+    y = A4[1] - 30
+    for satir in kdv1_metni(s).splitlines():
+        if y < 30:
+            c.showPage()
+            y = A4[1] - 30
+        c.setFont('Sentetik', 8)
+        c.drawString(20, y, satir)
+        y -= 11
+    c.save()
+    return Path(path)

@@ -10,7 +10,22 @@ taslağını ve bir **kontrol listesini** üretir.
 - Orijinal dosyalara **asla yazılmaz**; çıktılar `CLAUDE TASLAK\` klasörüne yeni adla kaydedilir.
 - İnternet gerektirmez. Mükellef verisi dışarı gönderilmez.
 
-## Kurulum (Windows)
+## Hazır program (Windows .exe)
+
+GitHub'da her değişiklikte Windows için tek dosyalık program derlenir ve test edilir:
+**Releases → "Teminat Çözüm Raporu Taslak Programı – son sürüm" → `TeminatCozum.exe`**
+(depo sayfasında sağdaki "Releases" bölümü; ya da Actions → "Teminat .exe derle" → yapıt).
+
+1. `TeminatCozum.exe`'yi bir klasöre koyun (ör. `C:\TeminatCozum\`).
+2. Firma ayar dosyasını yanına koyun: `C:\TeminatCozum\firmalar\<firma>\ayar.yaml` (örnek: `ayar.yaml`).
+3. Ofis raporları `.doc` ise LibreOffice kurulu olmalı.
+4. `.exe`'ye çift tıklayın: ayar dosyası, firma klasörü ve dönem seçilip **Taslak oluştur**'a basılır. Pencerede
+   ayrıca "Gerçek raporla karşılaştır", "Rapor denetle" ve "Geriye dönük test" düğmeleri vardır.
+
+`.exe` komut satırından da çalışır (`TeminatCozum.exe taslak --ayar ... --kok ... --donem 2026-03`); konsolu olmadığı
+için çıktı yanındaki `teminat_son_calisma.log` dosyasına yazılır. Python ile çalıştırmak için aşağıdaki kurulum.
+
+## Kurulum (Python ile)
 
 1. Python 3.11 veya üstü (python.org). Kurulumda "Add python.exe to PATH" işaretlenmeli.
 2. LibreOffice (ofisin `.doc` raporlarını `.docx`'e çevirmek için). Program `soffice.exe`'yi
@@ -24,7 +39,7 @@ pip install -r requirements.txt
 
 ## Kullanım
 
-Bütün komutlar bu klasörden (`teminat_cozum`) çalıştırılır.
+Bütün komutlar bu klasörden (`teminat_cozum`) çalıştırılır. Pencereli arayüz: `python -m teminat arayuz`.
 
 ### Aylık taslak
 
@@ -146,5 +161,7 @@ teminat/
   okuyucular/   kdv1.py (KDV 1 PDF), listeler.py (indirilecek / takip / yüklenilen), teminat.py (dilekçe), girdiler.py
   rapor/        olustur.py (taslak üretimi), safha.py (EKLİ seçimi), tablolar.py (tabloyu içerikten bulma), docx_araclari.py
   kontroller/   kurallar.py (sayısal kontroller), belge.py (Word üzerindeki kontroller), cikti.py (xlsx/html), liste.py
-  karsilastir.py, geriye_donuk.py, klasorler.py, donusum.py (.doc → .docx), ayar.py, cli.py
+  karsilastir.py, geriye_donuk.py, klasorler.py, donusum.py (.doc → .docx), ayar.py, cli.py, arayuz.py (pencere)
+TeminatCozum.py   .exe giriş noktası (argümansız → pencere, argümanla → komut satırı)
+tests/duman_verisi.py   .exe duman testi için gerçek PDF'li sentetik firma klasörü
 ```

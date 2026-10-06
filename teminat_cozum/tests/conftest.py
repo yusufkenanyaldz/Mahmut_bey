@@ -15,6 +15,9 @@ from teminat.ortak import Donem  # noqa: E402
 import sentetik as S  # noqa: E402
 
 
+GERCEK_PDF_METNI = kdv1.pdf_metni
+
+
 @pytest.fixture(autouse=True)
 def sahte_pdf(monkeypatch):
     """Sentetik 'KDV 1.pdf' dosyaları pdfplumber metnini düz metin olarak içerir."""

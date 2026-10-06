@@ -5,6 +5,7 @@
     python -m teminat karsilastir "gerçek rapor.doc(x)" "taslak.docx"
     python -m teminat denetle "rapor.doc(x)"
     python -m teminat geriye-donuk --ayar firmalar/<firma>/ayar.yaml --kok "...\\<FİRMA>" --cikti "...\\GERİYE DÖNÜK TEST"
+    python -m teminat arayuz          (pencereli arayüz; .exe çift tıklanınca da bu açılır)
 """
 import argparse
 import sys
@@ -95,6 +96,12 @@ def _geriye_donuk(a):
     return 0
 
 
+def _arayuz(a):
+    from .arayuz import main as arayuz_main
+    arayuz_main()
+    return 0
+
+
 def main(argv=None):
     for akis in (sys.stdout, sys.stderr):
         try:
@@ -133,6 +140,9 @@ def main(argv=None):
     g.add_argument('--bitis', help='ör. 2026-02')
     g.add_argument('--kati', action='store_true')
     g.set_defaults(fn=_geriye_donuk)
+
+    ar = alt.add_parser('arayuz', help='pencereli arayüzü açar')
+    ar.set_defaults(fn=_arayuz)
 
     a = p.parse_args(argv)
     try:
