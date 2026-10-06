@@ -3,6 +3,9 @@
 Faturaları (UBL-TR XML / Excel) ve yevmiye kayıtlarını firma başına ayrı bir yerel SQLite veritabanına
 aktarıp firmadaki muhasebe hatalarını raporlayan çevrimdışı masaüstü uygulaması.
 
+> Bu depoda ayrıca **KDV iadesi teminat çözüm raporu taslak programı** bulunur: [`teminat_cozum/`](teminat_cozum/README.md)
+> (kendi bağımlılıkları ve testleri vardır; `cd teminat_cozum && python -m pytest`).
+
 ## Kurulum ve çalıştırma
 
 ```bash

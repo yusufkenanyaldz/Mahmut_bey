@@ -1,0 +1,36 @@
+name: Teminat çözüm testleri
+
+on:
+  push:
+    paths: ["teminat_cozum/**", ".github/workflows/teminat-testler.yml"]
+  pull_request:
+    paths: ["teminat_cozum/**", ".github/workflows/teminat-testler.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: teminat_cozum
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: teminat_cozum/requirements*.txt
+
+      - name: Bağımlılıkları kur
+        run: pip install -r requirements-dev.txt
+
+      - name: Testleri çalıştır
+        run: python -m pytest -q

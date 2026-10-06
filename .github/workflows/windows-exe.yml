@@ -3,7 +3,7 @@ name: Windows .exe derle
 on:
   push:
     branches: [ccr-65a93959-yh6wl0, main, master]
-    paths-ignore: ["sim/**", "**.md"]
+    paths-ignore: ["sim/**", "**.md", "teminat_cozum/**", ".github/workflows/teminat-testler.yml"]
   workflow_dispatch:
 
 permissions:

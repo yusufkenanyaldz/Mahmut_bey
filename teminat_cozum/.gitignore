@@ -1,0 +1,12 @@
+# Mükellef verisi depoya konmaz (KVKK / meslek sırrı). Gerçek firma ayarları, girdi dosyaları,
+# raporlar ve taslaklar yalnızca ofis bilgisayarında tutulur.
+firmalar/*
+!firmalar/ornek/
+PROJE_TALIMATI.md
+ornek_cikti/
+CLAUDE TASLAK/
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.pdf

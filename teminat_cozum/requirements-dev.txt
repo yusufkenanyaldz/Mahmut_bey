@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest>=8
+xlwt>=1.3   # testlerde sentetik .xls üretmek için

@@ -1,0 +1,48 @@
+# Örnek firma ayar dosyası. Yeni firma için bu klasörü kopyalayın: firmalar/<firma>/ayar.yaml
+# Gerçek firmaların ayar dosyaları mükellef bilgisi içerdiği için depoya konmaz (.gitignore);
+# yalnızca bu örnek depodadır. Yazılmayan her alan için programdaki varsayılan kullanılır.
+
+firma: ÖRNEK METAL SAN. TİC. A.Ş.
+kisa_ad: ÖRNEK                  # çıktı başlıklarında kullanılır
+vkn: "0000000000"
+vergi_dairesi: Örnek Vergi Dairesi
+ymm_no: "00000000"              # raporlarda "YMM 00000000/2026-50" biçiminde geçen numara
+
+# Beyanda beklenen iade türleri; başka bir tür gelirse kontrol listesine uyarı yazılır.
+iade_turleri: [301, 410, 701]
+
+# 3-4-3 safha tablosunda "EKLİ" tutanak seçimi
+ekli_kurali:
+  yurtici_adet: 10              # tutarı en büyük kaç yurtiçi firma EKLİ olur
+  ithalat_ayri: true            # ithalat firmaları EKLİ'lerden sonra "n- İTHALAT" olarak yazılır
+  osb_listeden: false           # OSB/TSE satırları takip listesinde yoksa indirilecek listeden eklensin mi
+  asgari_oran: 0.80             # EKLİ toplamı bu oranı geçmiyorsa EKLİ sayısı artırılır
+
+# Firma adında geçen sözcüklere göre özel inceleme şekli (ilk uyan kural kullanılır).
+# Yazılmazsa varsayılan kurallar: STANDARD → TSE; ORGAN+SANAYİ (+IV. KISIM / İKİNCİ / YALOVA) → OSB-...
+# ozel_inceleme_sekilleri:
+#   - {kosul: [STANDARD], sekil: TSE}
+#   - {kosul: [ORGAN, SANAYİ, IV. KISIM], sekil: OSB-ELEKTRİK}
+#   - {kosul: [ORGAN, SANAYİ], sekil: OSB-SU}
+
+# Takip listesindeki firma adı rapora farklı yazılacaksa:
+# firma_adi_duzeltmeleri:
+#   "ABC YAPI LTD": "ABC YAPI MALZ. SAN. VE TİC. LTD. ŞTİ."
+
+# İş hacmi tablosuna (3-3-1) yeni eklenecek iade türünün etiketi (varsayılanı değiştirmek için)
+# iade_turu_etiketleri:
+#   "448": "448 – Demir Çelik Ürünlerinin Teslimi"
+
+# Tablolar sıra numarasıyla değil içerikleriyle bulunur. Bir firmanın raporunda başlık farklıysa:
+# tablolar:
+#   safha: {icerik: ["İNDİRİLECEK KDV TUTANAKLARI"]}
+
+# Ocak raporu atfı (1-1, 1-3, 1-8, 1-9, 1-10 paragrafları). Yazılmazsa rapor_referanslari "OCAK/<yıl>" kullanılır.
+ocak_raporu:
+  2026: {tarih: "15/04/2026", sayi: "2026-50"}
+
+# 3-4-4 "Asıl tutanakların durumu": dönemin tutanağının eklendiği raporun tarihi ve sayısı.
+# Ayrı bir dosya da verilebilir:  rapor_referanslari: rapor_referanslari.json
+rapor_referanslari:
+  ARALIK/2025: {tarih: "10.03.2026", sayi: "2026-30"}
+  OCAK/2026: {tarih: "15.04.2026", sayi: "2026-50"}
