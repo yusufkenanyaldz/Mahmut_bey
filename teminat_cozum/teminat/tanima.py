@@ -397,7 +397,7 @@ def rapor_bilgisi(p, onbellek=None):
 
 
 def metindeki_vknler(metin):
-    """Metinde geçen 10-11 haneli numaralar (aralarında tek boşluk olabilir: '380 119 8516')."""
+    """Metinde geçen 10-11 haneli numaralar (aralarında tek boşluk olabilir: '123 456 7890')."""
     return {re.sub(r'\D', '', x) for x in re.findall(r'(?<![\d])(\d(?:[ ]?\d){9,10})(?![\d])', metin or '')}
 
 
