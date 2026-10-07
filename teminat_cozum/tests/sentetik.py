@@ -289,7 +289,12 @@ def dilekce_docx(path, s: Senaryo):
 
 def girdi_klasoru(kok, s: Senaryo, ad=None):
     """<kok>/<yyyy>/<NN AY>/ altında bir aylık girdi klasörü üretir ve yolunu döndürür."""
-    k = Path(kok) / str(s.donem.yil) / (ad or f'{s.donem.ay:02d} {s.donem.ad}')
+    return girdi_klasoru_yol(Path(kok) / str(s.donem.yil) / (ad or f'{s.donem.ay:02d} {s.donem.ad}'), s)
+
+
+def girdi_klasoru_yol(k, s: Senaryo):
+    """Verilen klasöre bir aylık girdi dosyalarını yazar."""
+    k = Path(k)
     (k / 'TUTANAK ÇALIŞMASI').mkdir(parents=True, exist_ok=True)
     # Gerçek PDF yerine pdfplumber metni yazılır; testlerde pdf_metni bu dosyayı düz metin olarak okur.
     (k / 'KDV 1.pdf').write_text(kdv1_metni(s), encoding='utf-8')

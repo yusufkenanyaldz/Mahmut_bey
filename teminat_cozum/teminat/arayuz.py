@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import __version__, cli
 from .donusum import soffice_yolu
-from .klasorler import ay_klasoru
+from .klasorler import girdi_ve_sablon_bul
 from .ortak import Donem
 
 HATIRLA = Path.home() / '.teminat_cozum.json'
@@ -31,11 +31,13 @@ def program_klasoru():
 
 
 class _KuyrukYazici:
-    def __init__(self, q):
+    def __init__(self, q, kayit=None):
         self.q = q
+        self.kayit = kayit if kayit is not None else []
 
     def write(self, s):
         self.q.put(s)
+        self.kayit.append(s)
         return len(s)
 
     def flush(self):
@@ -64,12 +66,21 @@ class Uygulama(tk.Tk):
         self.q = queue.Queue()
         self.calisiyor = False
         self.v_ayar, self.v_kok, self.v_donem = tk.StringVar(), tk.StringVar(), tk.StringVar()
+        self.v_sablon = tk.StringVar()      # hatırlanmaz: her ay farklıdır
+        self.son_cikti = None
+        self.calisma_metni = []
         self._hatirla_yukle()
         self._kur()
         self.after(100, self._kuyrugu_bosalt)
-        self._yaz('Ayar dosyasını, firma klasörünü (ör. ...\\TEMİNAT ÇÖZÜMÜ\\<FİRMA>) ve dönemi (ör. 2026-03) seçip '
-                  '"Taslak oluştur"a basın. Taslak ve kontrol listesi o ayın klasöründeki "CLAUDE TASLAK" klasörüne yazılır; '
-                  'orijinal dosyalara dokunulmaz.\n')
+        self._yaz(
+            'Nasıl çalışır:\n'
+            '1) Ayar dosyasını seçin (firmalar\\<firma>\\ayar.yaml).\n'
+            '2) Klasör: ya doğrudan bu ayın klasörünü (KDV 1.pdf\'in olduğu klasör) seçin — dönem beyannameden okunur —\n'
+            '   ya da firma klasörünü (ör. ...\\TEMİNAT ÇÖZÜMÜ\\<FİRMA>) seçip dönemi yazın (ör. 2026-03).\n'
+            '3) Program önceki ayın bitmiş raporunu (şablon) önceki ayın klasöründe arar ("RAPOR" alt klasörü ya da adında\n'
+            '   RAPOR geçen Word dosyası). Bulamazsa "Önceki ayın raporu" alanından kendiniz seçin.\n'
+            '4) "Klasörleri bul" ile neyin bulunduğunu görebilir, "Taslak oluştur" ile taslağı üretebilirsiniz.\n'
+            'Taslak ve kontrol listesi o ayın klasöründeki "CLAUDE TASLAK" klasörüne yazılır; orijinal dosyalara dokunulmaz.\n')
         if not soffice_yolu():
             self._yaz('\nNot: LibreOffice bulunamadı. Ofis raporları .doc ise çevrilemez; LibreOffice kurun ya da raporu '
                       'Word ile .docx olarak kaydedin.\n')
@@ -80,18 +91,24 @@ class Uygulama(tk.Tk):
         ust.pack(fill='x')
         ust.columnconfigure(1, weight=1)
         satirlar = [('Ayar dosyası (ayar.yaml):', self.v_ayar, self._sec_ayar),
-                    ('Firma klasörü:', self.v_kok, self._sec_kok)]
+                    ('Klasör (bu ayın ya da firmanın):', self.v_kok, self._sec_kok),
+                    ('Önceki ayın raporu (isteğe bağlı):', self.v_sablon, self._sec_sablon)]
         for i, (etiket, deg, komut) in enumerate(satirlar):
             ttk.Label(ust, text=etiket).grid(row=i, column=0, sticky='w', pady=3)
             ttk.Entry(ust, textvariable=deg).grid(row=i, column=1, sticky='ew', padx=6)
             ttk.Button(ust, text='Seç…', command=komut).grid(row=i, column=2)
-        ttk.Label(ust, text='Dönem (ör. 2026-03):').grid(row=2, column=0, sticky='w', pady=3)
-        ttk.Entry(ust, textvariable=self.v_donem, width=14).grid(row=2, column=1, sticky='w', padx=6)
+        ttk.Label(ust, text='Dönem (ör. 2026-03):').grid(row=3, column=0, sticky='w', pady=3)
+        donem_satiri = ttk.Frame(ust)
+        donem_satiri.grid(row=3, column=1, sticky='w', padx=6)
+        ttk.Entry(donem_satiri, textvariable=self.v_donem, width=14).pack(side='left')
+        ttk.Label(donem_satiri, text='  ayın klasörünü seçtiyseniz boş bırakabilirsiniz (KDV 1\'den okunur)',
+                  foreground='#555').pack(side='left')
 
         dugmeler = ttk.Frame(self, padding=(10, 0))
         dugmeler.pack(fill='x')
         self.dugmeler = []
-        for metin, komut in [('Taslak oluştur', self.taslak), ('Çıktı klasörünü aç', self.cikti_ac),
+        for metin, komut in [('Klasörleri bul', self.klasor_bul), ('Taslak oluştur', self.taslak),
+                             ('Çıktı klasörünü aç', self.cikti_ac),
                              ('Gerçek raporla karşılaştır…', self.karsilastir), ('Rapor denetle…', self.denetle),
                              ('Geriye dönük test', self.geriye_donuk)]:
             b = ttk.Button(dugmeler, text=metin, command=komut)
@@ -152,22 +169,33 @@ class Uygulama(tk.Tk):
             self.v_ayar.set(p)
 
     def _sec_kok(self):
-        p = filedialog.askdirectory(title='Firma klasörü (yıl klasörlerini içeren)', initialdir=self.v_kok.get() or None)
+        p = filedialog.askdirectory(title='Bu ayın klasörü (KDV 1.pdf\'in olduğu) ya da firma klasörü',
+                                    initialdir=self.v_kok.get() or None)
         if p:
             self.v_kok.set(p)
+            self.v_sablon.set('')
+
+    def _sec_sablon(self):
+        p = filedialog.askopenfilename(title='Önceki ayın bitmiş raporu (şablon)', filetypes=[('Word', '*.doc *.docx')],
+                                       initialdir=self.v_kok.get() or None)
+        if p:
+            self.v_sablon.set(p)
 
     def _donem(self):
+        """Yazılan dönem; boşsa None; hatalıysa False (mesaj gösterilir)."""
+        if not self.v_donem.get().strip():
+            return None
         try:
             return Donem.coz(self.v_donem.get())
         except ValueError as e:
             messagebox.showerror('Dönem', str(e))
-            return None
+            return False
 
     def _ortak_kontrol(self):
         if self.calisiyor:
             return False
         if not self.v_kok.get() or not Path(self.v_kok.get()).is_dir():
-            messagebox.showerror('Firma klasörü', 'Firma klasörünü seçin (ör. ...\\TEMİNAT ÇÖZÜMÜ\\<FİRMA>).')
+            messagebox.showerror('Klasör', 'Bu ayın klasörünü (KDV 1.pdf\'in olduğu klasör) ya da firma klasörünü seçin.')
             return False
         if self.v_ayar.get() and not Path(self.v_ayar.get()).is_file():
             messagebox.showerror('Ayar dosyası', f'Ayar dosyası bulunamadı: {self.v_ayar.get()}')
@@ -183,9 +211,10 @@ class Uygulama(tk.Tk):
             b.state(['disabled'])
         self.durum.configure(text=f'{baslik} çalışıyor…')
         self._yaz(f'\n===== {baslik} =====\n')
+        self.calisma_metni = []
 
         def is_parcacigi():
-            yazici = _KuyrukYazici(self.q)
+            yazici = _KuyrukYazici(self.q, self.calisma_metni)
             try:
                 with redirect_stdout(yazici), redirect_stderr(yazici):
                     kod = cli.main(argv)
@@ -207,26 +236,55 @@ class Uygulama(tk.Tk):
         durum = {0: 'tamamlandı.', 1: 'tamamlandı — kontrol listesinde HATA var, inceleyin.'}.get(kod, 'yapılamadı (yukarıdaki hataya bakın).')
         self.durum.configure(text=f'{baslik} {durum}')
         self._yaz(f'\n{baslik} {durum}\n')
+        metin = ''.join(self.calisma_metni)
+        for satir in metin.splitlines():
+            if satir.startswith('Taslak : '):
+                self.son_cikti = Path(satir[len('Taslak : '):].strip()).parent
+        if kod == 2:
+            hata = [x[len('HATA: '):] for x in metin.splitlines() if x.startswith('HATA: ')]
+            messagebox.showerror(baslik, hata[-1] if hata else 'İşlem yapılamadı; penceredeki açıklamaya bakın.')
 
     # ---------------------------------------------------------------- işlemler
+    def _klasor_argumanlari(self):
+        d = self._donem()
+        if d is False:
+            return None
+        argv = ['--kok', self.v_kok.get()] + (['--donem', d.tire] if d else [])
+        return argv, (d.tire if d else '')
+
+    def klasor_bul(self):
+        if not self._ortak_kontrol():
+            return
+        a = self._klasor_argumanlari()
+        if a is None:
+            return
+        self._calistir(['klasor', *a[0]], 'Klasör arama')
+
     def taslak(self):
         if not self._ortak_kontrol():
             return
-        d = self._donem()
-        if not d:
+        a = self._klasor_argumanlari()
+        if a is None:
+            return
+        sablon = self.v_sablon.get().strip()
+        if sablon and not Path(sablon).is_file():
+            messagebox.showerror('Önceki ayın raporu', f'Dosya bulunamadı: {sablon}')
             return
         self._hatirla_kaydet()
-        self._calistir(['taslak', *self._ayar_arg(), '--kok', self.v_kok.get(), '--donem', d.tire], f'{d.tire} taslak')
+        self._calistir(['taslak', *self._ayar_arg(), *a[0], *(['--sablon', sablon] if sablon else [])],
+                       f'{a[1]} taslak' if a[1] else 'Taslak')
 
     def cikti_ac(self):
-        d = self._donem() if self.v_donem.get() else None
-        try:
-            yol = ay_klasoru(self.v_kok.get(), d) / 'CLAUDE TASLAK' if d else Path(self.v_kok.get())
-        except Exception as e:  # noqa: BLE001
-            messagebox.showerror('Klasör', str(e))
-            return
-        if not yol.is_dir():
-            messagebox.showinfo('Klasör', f'Henüz çıktı yok: {yol}')
+        yol = self.son_cikti
+        if yol is None and self.v_kok.get():
+            d = self._donem()
+            try:
+                yol = girdi_ve_sablon_bul(self.v_kok.get(), d or None).girdi / 'CLAUDE TASLAK'
+            except Exception as e:  # noqa: BLE001
+                messagebox.showerror('Klasör', str(e))
+                return
+        if yol is None or not Path(yol).is_dir():
+            messagebox.showinfo('Klasör', f'Henüz çıktı yok{": " + str(yol) if yol else ""}. Önce "Taslak oluştur"a basın.')
             return
         klasoru_ac(yol)
 

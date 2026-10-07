@@ -1,7 +1,9 @@
 """Komut satırı.
 
     python -m teminat taslak --ayar firmalar/<firma>/ayar.yaml --kok "C:\\...\\TEMİNAT ÇÖZÜMÜ\\<FİRMA>" --donem 2026-03
+    python -m teminat taslak --ayar firmalar/<firma>/ayar.yaml --girdi "...\\2026\\03 MART"   (dönem KDV 1'den, şablon önceki aydan)
     python -m teminat taslak --ayar firmalar/<firma>/ayar.yaml --sablon "ŞUBAT-2026 RAPOR.doc" --girdi "...\\2026\\03 MART"
+    python -m teminat klasor --kok "...\\<FİRMA>" --donem 2026-03                        (yalnızca klasörleri bul)
     python -m teminat karsilastir "gerçek rapor.doc(x)" "taslak.docx"
     python -m teminat denetle "rapor.doc(x)"
     python -m teminat geriye-donuk --ayar firmalar/<firma>/ayar.yaml --kok "...\\<FİRMA>" --cikti "...\\GERİYE DÖNÜK TEST"
@@ -14,28 +16,41 @@ from pathlib import Path
 
 from .ayar import ayar_oku
 from .donusum import DonusumHatasi, docx_hazirla
-from .klasorler import KlasorHatasi, ay_klasoru, rapor_dosyasi
+from .klasorler import KlasorHatasi, girdi_ve_sablon_bul
 from .okuyucular.girdiler import GirdiHatasi
 from .ortak import Donem
 from .rapor.olustur import SablonHatasi
+
+
+def _bul(a):
+    """Seçilen klasörden bu ayın klasörünü ve önceki ayın raporunu bulur; bulamazsa nedenini anlatan hata verir."""
+    secilen = a.girdi or a.kok
+    if not secilen:
+        raise SystemExit('--kok (firma klasörü + --donem) ya da --girdi (o ayın klasörü) verilmeli.')
+    return girdi_ve_sablon_bul(secilen, Donem.coz(a.donem) if a.donem else None)
+
+
+def _klasor(a):
+    b = _bul(a)
+    print(b.ozet())
+    return 0 if b.sablon else 1
 
 
 def _taslak(a):
     from .kontroller.cikti import konsol_ozeti
     from .taslak import taslak_uret
     ayar = ayar_oku(a.ayar)
-    if a.kok:
-        if not a.donem:
-            raise SystemExit('--kok ile birlikte --donem verilmeli (ör. 2026-03).')
-        d = Donem.coz(a.donem)
-        girdi = Path(a.girdi) if a.girdi else ay_klasoru(a.kok, d)
-        sablon = Path(a.sablon) if a.sablon else rapor_dosyasi(ay_klasoru(a.kok, d.onceki()))
-        if not sablon:
-            raise SystemExit(f'{d.onceki().tire} RAPOR klasöründe rapor bulunamadı; --sablon ile verin.')
-    else:
-        if not (a.sablon and a.girdi):
-            raise SystemExit('--sablon ve --girdi (ya da --kok ve --donem) verilmeli.')
+    if a.sablon and a.girdi:
         sablon, girdi = Path(a.sablon), Path(a.girdi)
+    else:
+        b = _bul(a)
+        for n in b.notlar:
+            print(f'Not: {n}')
+        girdi = b.girdi
+        sablon = Path(a.sablon) if a.sablon else b.sablon
+        if not sablon:
+            raise KlasorHatasi(f'Önceki ayın ({b.donem.onceki().tire}) bitmiş raporu bulunamadı; şablon olarak kullanılacak '
+                               'raporu "Önceki ayın raporu" alanından (komut satırında --sablon) seçin.')
     print(f'Şablon : {sablon}\nGirdi  : {girdi}')
     tc = taslak_uret(ayar, sablon, girdi, a.cikti, kati=a.kati, uzerine_yaz=a.uzerine_yaz)
     print(f'Taslak : {tc.docx}\nKontrol: {tc.xlsx}\n         {tc.html}\n')
@@ -114,13 +129,19 @@ def main(argv=None):
     t = alt.add_parser('taslak', help='önceki ayın raporundan bu ayın taslağını ve kontrol listesini üretir')
     t.add_argument('--ayar', help='firma ayar dosyası (firmalar/<firma>/ayar.yaml)')
     t.add_argument('--kok', help='firma klasörü (ör. ...\\TEMİNAT ÇÖZÜMÜ\\<FİRMA>); --donem ile birlikte')
-    t.add_argument('--donem', help='rapor dönemi: 2026-03 ya da MART-2026')
-    t.add_argument('--sablon', help='önceki ayın bitmiş raporu (.doc/.docx)')
-    t.add_argument('--girdi', help='bu ayın girdi klasörü')
+    t.add_argument('--donem', help='rapor dönemi: 2026-03 ya da MART-2026 (--girdi verilirse KDV 1\'den okunur)')
+    t.add_argument('--sablon', help='önceki ayın bitmiş raporu (.doc/.docx); verilmezse önceki ayın klasöründe aranır')
+    t.add_argument('--girdi', help='bu ayın girdi klasörü (KDV 1.pdf\'in olduğu klasör)')
     t.add_argument('--cikti', help='çıktı klasörü (varsayılan: <girdi>\\CLAUDE TASLAK)')
     t.add_argument('--uzerine-yaz', action='store_true', help='aynı adlı eski taslağın üzerine yaz')
     t.add_argument('--kati', action='store_true', help='ilk hatada dur (geliştirme için)')
     t.set_defaults(fn=_taslak)
+
+    b = alt.add_parser('klasor', help='seçilen klasörde bu ayın klasörünü ve önceki ayın raporunu bulur (deneme)')
+    b.add_argument('--kok', help='firma klasörü')
+    b.add_argument('--girdi', help='o ayın klasörü')
+    b.add_argument('--donem', help='2026-03')
+    b.set_defaults(fn=_klasor)
 
     k = alt.add_parser('karsilastir', help='taslak ile ofisin bitmiş raporunu karşılaştırır')
     k.add_argument('gercek')

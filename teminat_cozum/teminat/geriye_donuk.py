@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .donusum import docx_hazirla
 from .karsilastir import karsilastir
-from .klasorler import ay_klasorleri, rapor_dosyasi
+from .klasorler import KlasorHatasi, arama_koku, donem_haritasi, rapor_sec
 from .taslak import taslak_uret
 
 
@@ -27,26 +27,33 @@ def geriye_donuk(ayar, kok, cikti_klasoru, baslangic=None, bitis=None, kati=Fals
     cikti_klasoru = Path(cikti_klasoru)
     cikti_klasoru.mkdir(parents=True, exist_ok=True)
     cev = cikti_klasoru / '_cevrilen'
-    aylar = ay_klasorleri(kok)
+    aylar, _ = donem_haritasi(arama_koku(kok))
+    if not aylar:
+        raise KlasorHatasi(f'{kok} altında dönemi anlaşılan ay klasörü bulunamadı; firma klasörünü seçin.')
     sonuc = []
     for d in sorted(aylar):
         if (baslangic and d < baslangic) or (bitis and d > bitis):
             continue
         onceki = d.onceki()
-        if onceki not in aylar:
-            sonuc.append(AySonucu(d, 'atlandı', f'{onceki.tire} klasörü yok (şablon için önceki ayın raporu gerekli).'))
-            continue
         try:
-            sablon = rapor_dosyasi(aylar[onceki])
-            gercek = rapor_dosyasi(aylar[d])
+            if onceki not in aylar:
+                sonuc.append(AySonucu(d, 'atlandı', f'{onceki.tire} klasörü yok (şablon için önceki ayın raporu gerekli).'))
+                continue
+            girdiler = aylar[d]['girdi']
+            if len(girdiler) != 1:
+                sonuc.append(AySonucu(d, 'atlandı', f'{d.tire}: KDV 1.pdf içeren klasör sayısı {len(girdiler)} '
+                                      f'({"; ".join(map(str, girdiler)) or "yok"}).'))
+                continue
+            sablon = rapor_sec(aylar[onceki]['rapor'], f'{onceki.tire} klasörlerinde')
+            gercek = rapor_sec(aylar[d]['rapor'], f'{d.tire} klasörlerinde')
             if not sablon:
-                sonuc.append(AySonucu(d, 'atlandı', f'{onceki.tire}/RAPOR içinde rapor yok.'))
+                sonuc.append(AySonucu(d, 'atlandı', f'{onceki.tire} klasöründe ofis raporu yok.'))
                 continue
             if not gercek:
-                sonuc.append(AySonucu(d, 'atlandı', f'{d.tire}/RAPOR içinde karşılaştırılacak rapor yok.'))
+                sonuc.append(AySonucu(d, 'atlandı', f'{d.tire} klasöründe karşılaştırılacak ofis raporu yok.'))
                 continue
             ay_cikti = cikti_klasoru / d.tire
-            tc = taslak_uret(ayar, sablon, aylar[d], ay_cikti, kati=kati, uzerine_yaz=True)
+            tc = taslak_uret(ayar, sablon, girdiler[0], ay_cikti, kati=kati, uzerine_yaz=True)
             k = karsilastir(docx_hazirla(gercek, cev), tc.docx)
             fark = ay_cikti / f'{d.tire} FARKLAR.txt'
             fark.write_text(k.metin(), encoding='utf-8')

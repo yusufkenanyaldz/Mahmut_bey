@@ -7,7 +7,7 @@ import sentetik as S
 from teminat.cli import main
 from teminat.geriye_donuk import geriye_donuk
 from teminat.karsilastir import karsilastir
-from teminat.klasorler import KlasorHatasi, ay_klasorleri, rapor_dosyasi
+from teminat.klasorler import KlasorHatasi, rapor_dosyasi
 from teminat.ortak import Donem
 from teminat.rapor.docx_araclari import uniq_cells
 from teminat.rapor.tablolar import tablolari_bul
@@ -27,22 +27,19 @@ def test_karsilastir_tutar_farki(tmp_path):
     assert '99,99' in k.metin()
 
 
-def test_ay_klasorleri_ve_rapor_secimi(tmp_path):
-    kok = tmp_path / 'FIRMA'
-    for ad in ('2026/01 OCAK', '2026/02 ŞUBAT (GİRDİ)', '2025/12 ARALIK', '2025/notlar'):
-        (kok / ad / 'RAPOR').mkdir(parents=True)
-    a = ay_klasorleri(kok)
-    assert sorted(a) == [Donem(2025, 12), Donem(2026, 1), Donem(2026, 2)]
-    r = kok / '2026/01 OCAK/RAPOR'
+def test_rapor_secimi(tmp_path):
+    ay = tmp_path / '2026/01 OCAK'
+    r = ay / 'RAPOR'
+    r.mkdir(parents=True)
     (r / 'OCAK-2026 RAPOR.doc').write_text('x')
     (r / 'OCAK-2026 RAPOR ORJ.doc').write_text('x')
     (r / '~$OCAK-2026 RAPOR.doc').write_text('x')
-    assert rapor_dosyasi(kok / '2026/01 OCAK').name == 'OCAK-2026 RAPOR.doc'
+    assert rapor_dosyasi(ay).name == 'OCAK-2026 RAPOR.doc'
     (r / 'OCAK-2026 RAPOR.docx').write_text('x')
-    assert rapor_dosyasi(kok / '2026/01 OCAK').name == 'OCAK-2026 RAPOR.docx'
+    assert rapor_dosyasi(ay).name == 'OCAK-2026 RAPOR.docx'
     (r / 'başka RAPOR.docx').write_text('x')
     with pytest.raises(KlasorHatasi):
-        rapor_dosyasi(kok / '2026/01 OCAK')
+        rapor_dosyasi(ay)
 
 
 def _firma_klasoru(kok):

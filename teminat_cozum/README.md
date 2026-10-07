@@ -19,8 +19,13 @@ GitHub'da her değişiklikte Windows için tek dosyalık program derlenir ve tes
 1. `TeminatCozum.exe`'yi bir klasöre koyun (ör. `C:\TeminatCozum\`).
 2. Firma ayar dosyasını yanına koyun: `C:\TeminatCozum\firmalar\<firma>\ayar.yaml` (örnek: `ayar.yaml`).
 3. Ofis raporları `.doc` ise LibreOffice kurulu olmalı.
-4. `.exe`'ye çift tıklayın: ayar dosyası, firma klasörü ve dönem seçilip **Taslak oluştur**'a basılır. Pencerede
-   ayrıca "Gerçek raporla karşılaştır", "Rapor denetle" ve "Geriye dönük test" düğmeleri vardır.
+4. `.exe`'ye çift tıklayın ve pencerede:
+   - **Ayar dosyası**: `firmalar\<firma>\ayar.yaml`
+   - **Klasör**: en kolayı doğrudan **bu ayın klasörünü** (KDV 1.pdf'in olduğu klasör, ör. `...\2026\03 MART`) seçmek;
+     dönem beyannameden okunur. Firma klasörünü (`...\TEMİNAT ÇÖZÜMÜ\<FİRMA>`) seçerseniz dönemi yazın (ör. `2026-03`).
+   - **Önceki ayın raporu**: boş bırakın; program önceki ayın klasöründe arar. Bulamazsa buradan kendiniz seçin.
+   - **Klasörleri bul**: neyin bulunduğunu gösterir (bu ayın klasörü, dönem, şablon). **Taslak oluştur**: taslağı üretir.
+   Pencerede ayrıca "Gerçek raporla karşılaştır", "Rapor denetle" ve "Geriye dönük test" düğmeleri vardır.
 
 `.exe` komut satırından da çalışır (`TeminatCozum.exe taslak --ayar ... --kok ... --donem 2026-03`); konsolu olmadığı
 için çıktı yanındaki `teminat_son_calisma.log` dosyasına yazılır. Python ile çalıştırmak için aşağıdaki kurulum.
@@ -105,6 +110,15 @@ python -m teminat denetle "...\ARALIK-2025 RAPOR.doc"
 görünmesi (satır kayması) ve %80 oranını kontrol eder.
 
 ## Girdi klasörü standardı
+
+Klasör adları esnek tanınır: ay klasörünün adında ay adı (`02 ŞUBAT`, `02 ŞUBAT (GİRDİ)`, `ESKA 12- ARALIK`, `Şubat 2026`,
+`SUBAT`) ya da başında ay numarası (`02`, `3- GİRDİ`) ya da `2026-02` biçimi olması yeterlidir. Yıl, klasör adından ya da üst
+klasörlerden (`2026`, `2026 YILI`) anlaşılır; anlaşılamazsa KDV 1 beyannamesinden okunur. Önceki ayın raporu, önceki ayın
+klasöründeki `RAPOR...` alt klasöründe ya da adında RAPOR geçen Word dosyası olarak aranır. Bir şey bulunamazsa hata mesajı
+programın gördüğü ay klasörlerini listeler; `python -m teminat klasor --kok ... --donem ...` (ya da penceredeki
+"Klasörleri bul") yalnızca bulma adımını çalıştırır.
+
+Önerilen düzen:
 
 ```
 TEMİNAT ÇÖZÜMÜ\<FİRMA>\2026\02 ŞUBAT\
