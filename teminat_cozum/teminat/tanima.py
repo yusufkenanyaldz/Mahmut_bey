@@ -300,7 +300,7 @@ def tani(klasor, duzeltmeler=None, onbellek=None, ilerleme=None):
     for i, p in enumerate(yollar):
         if ilerleme and i % 50 == 0:
             ilerleme(f'{i}/{len(yollar)} dosya okunuyor…')
-        b = Belge(p, nf(str(p.relative_to(klasor))), 'BILINMEYEN')
+        b = Belge(p, nf(p.relative_to(klasor).as_posix()), 'BILINMEYEN')
         belgeler.append(b)
         elle = duzeltmeler.tur(p)
         if elle:

@@ -68,7 +68,7 @@ def taslak_uret(ayar, sablon, girdi, cikti_klasoru=None, kati=False, uzerine_yaz
     if ilerleme:
         ilerleme('Taslak oluşturuluyor…')
     sonuc = taslak_olustur(sablon_docx, g, ayar, docx, kati=kati)
-    sonuc.ozet['dosyalar'] = {**{rol: str(Path(y).relative_to(girdi)) if Path(y).is_relative_to(girdi) else str(y)
+    sonuc.ozet['dosyalar'] = {**{rol: Path(y).relative_to(girdi).as_posix() if Path(y).is_relative_to(girdi) else str(y)
                                  for rol, y in hz.secim.yollar.items()},
                               'Şablon': str(hz.sablon)}
     sonuc.ozet['belgeler'] = belge_satirlari(hz)
