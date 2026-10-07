@@ -18,10 +18,25 @@ import sentetik as S  # noqa: E402
 GERCEK_PDF_METNI = kdv1.pdf_metni
 
 
+GERCEK_PDF_ILK_SAYFA = kdv1.pdf_ilk_sayfa
+
+
+def _metin_ya_da_pdf(p, gercek):
+    """Sentetik '.pdf' dosyaları çoğunlukla pdfplumber metnini düz metin olarak içerir; gerçek PDF ise gerçekten okunur."""
+    with open(p, 'rb') as f:
+        if f.read(5) == b'%PDF-':
+            return gercek(p)
+    return Path(p).read_text(encoding='utf-8')
+
+
 @pytest.fixture(autouse=True)
-def sahte_pdf(monkeypatch):
-    """Sentetik 'KDV 1.pdf' dosyaları pdfplumber metnini düz metin olarak içerir."""
-    monkeypatch.setattr(kdv1, 'pdf_metni', lambda p: Path(p).read_text(encoding='utf-8'))
+def sahte_pdf(monkeypatch, tmp_path_factory):
+    monkeypatch.setattr(kdv1, 'pdf_metni', lambda p: _metin_ya_da_pdf(p, GERCEK_PDF_METNI))
+    monkeypatch.setattr(kdv1, 'pdf_ilk_sayfa', lambda p: _metin_ya_da_pdf(p, GERCEK_PDF_ILK_SAYFA))
+    # tanıma önbelleği ve hatırlanan ayarlar kullanıcının ev klasörüne değil geçici klasöre yazılsın
+    ev = tmp_path_factory.mktemp('ev')
+    monkeypatch.setenv('HOME', str(ev))
+    monkeypatch.setenv('USERPROFILE', str(ev))
 
 
 @pytest.fixture

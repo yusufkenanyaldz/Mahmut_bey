@@ -1,7 +1,8 @@
 """Windows .exe giriş noktası (PyInstaller).
 
-Argümansız çalıştırılırsa (çift tıklama) pencereli arayüz açılır. Argümanla çalıştırılırsa komut satırıyla aynıdır:
-    TeminatCozum.exe taslak --ayar firmalar\\<firma>\\ayar.yaml --kok "...\\<FİRMA>" --donem 2026-03
+Argümansız çalıştırılırsa (çift tıklama) pencereli arayüz açılır; bir klasör .exe'nin üzerine sürüklenirse pencere o
+klasör seçili açılır. Diğer argümanlarla komut satırıyla aynıdır:
+    TeminatCozum.exe taslak "<firmanın o ayki klasörü>" --ayar firmalar\\<firma>\\ayar.yaml
 Pencereli .exe'nin konsolu olmadığı için bu durumda çıktı .exe'nin yanındaki (yazılamıyorsa TEMP klasöründeki)
 teminat_son_calisma.log dosyasına yazılır.
 """
@@ -23,6 +24,11 @@ def _gunluk_ac():
 
 
 def main():
+    if len(sys.argv) == 2 and Path(sys.argv[1]).is_dir():
+        # klasör .exe'nin üzerine sürüklenip bırakıldı: pencereyi o klasör seçili açar
+        from teminat.arayuz import main as arayuz_main
+        arayuz_main(sys.argv[1])
+        return 0
     if len(sys.argv) > 1:
         if sys.stdout is None or sys.stderr is None:
             sys.stdout = sys.stderr = _gunluk_ac()

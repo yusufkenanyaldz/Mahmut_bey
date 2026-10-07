@@ -62,23 +62,17 @@ def test_kdv1_metinden_tum_alanlar():
                    '448': (300_000.0, 0.0)}
 
 
-def test_kdv1_dosya_adi(tmp_path):
-    for ad in ('KDV 1.pdf', 'KDV 2.pdf', 'KDV 10.pdf', 'kdv1 beyanname.pdf', 'notlar.pdf'):
-        (tmp_path / ad).write_text('x')
-    assert sorted(p.name for p in kdv1.kdv1_bul(tmp_path)) == ['KDV 1.pdf', 'kdv1 beyanname.pdf']
-
-
 def test_listeler(tmp_path):
     s = S.Senaryo(Donem(2026, 3))
     g = S.girdi_klasoru(tmp_path, s)
-    ind = listeler.indirilecek_oku(listeler.indirilecek_bul(g)[0])
+    ind = listeler.indirilecek_oku(g / 'internetvd_kdviadesi_indirilecekkdvListesi_FORMATI.xls')
     assert round(sum(r['kdv'] for r in ind), 2) == round(s.base, 2)
     assert {r['vkn'] for r in ind if r['satici'] == 'PI TRADING GMBH'} == {'1111111111'}
     assert listeler.donem_degeri(ind[0]['donem']) == (2026, 3)
-    takip = listeler.takip_oku(listeler.takip_bul(g)[0])
+    takip = listeler.takip_oku(next((g / 'TUTANAK ÇALIŞMASI').glob('01 FİRMA*.xls')))
     assert takip[0]['firma'] == 'ALFA ÇELİK SAN. VE TİC. A.Ş.' and takip[0]['ymm'] == 'YMM ALİ VELİ'
     assert all(t['firma'] != 'SİGMA KIRTASİYE' for t in takip)
-    yuk = listeler.yuklenilen_oku(listeler.yuklenilen_bul(g)[0])
+    yuk = listeler.yuklenilen_oku(g / 'yüklenilen tutanak çalışması.xls')
     assert [(y['firma'], y['per']) for y in yuk] == [('GAMA DEMİR SAN. A.Ş.', (2026, 3)), ('ALFA ÇELİK SAN. VE TİC. A.Ş.', (2026, 2))]
 
 
@@ -91,7 +85,7 @@ def test_donem_degeri(deger, beklenen):
 def test_teminat_dilekcesi(tmp_path):
     s = S.Senaryo(Donem(2026, 3))
     S.dilekce_docx(tmp_path / 'TEMİNAT MEKTUBU KABUL DİLEKÇESİ - MART 2026.docx', s)
-    p = teminat.dilekce_bul(tmp_path)[0]
+    p = tmp_path / 'TEMİNAT MEKTUBU KABUL DİLEKÇESİ - MART 2026.docx'
     t = teminat.dilekce_metinden(teminat.dilekce_metni(p))
     assert t['301'] == 360_000.0 and t['410'] == 2_880_000.0 and t['toplam'] == 3_240_000.0
     assert t['tarih'] == '26.03.2026' and t['no'] == '1234567'
@@ -102,15 +96,8 @@ def test_girdiler_zorunlu_dosyalar(tmp_path):
     g = S.girdi_klasoru(tmp_path, S.Senaryo(Donem(2026, 3)))
     assert girdileri_oku(g).donem == Donem(2026, 3)
     (g / 'KDV 1.pdf').unlink()
-    with pytest.raises(GirdiHatasi, match='KDV 1'):
+    with pytest.raises(GirdiHatasi, match='1 No.lu KDV beyannamesi bulunamadı'):
         girdileri_oku(g)
-
-
-def test_girdiler_birden_fazla_aday_uyarir(tmp_path):
-    g = S.girdi_klasoru(tmp_path, S.Senaryo(Donem(2026, 3)))
-    (g / 'yüklenilen tutanak çalışması - Kopya.xls').write_bytes((g / 'yüklenilen tutanak çalışması.xls').read_bytes())
-    notlar = girdileri_oku(g).notlar
-    assert any('birden fazla' in n[2] for n in notlar)
 
 
 def test_gercek_pdf_okunur(tmp_path):

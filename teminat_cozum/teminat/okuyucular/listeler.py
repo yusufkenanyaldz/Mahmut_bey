@@ -3,17 +3,9 @@ import datetime
 import re
 from pathlib import Path
 
-from ..ortak import dosyalari_bul, katla, xrows
+from ..ortak import xrows
 
 ITHALAT_VKN = '1111111111'
-
-
-def indirilecek_bul(klasor):
-    """Önce klasörün kendisinde 'İndirilecek KDV listesi*.xls', yoksa alt klasörlerle birlikte
-    '*indirilecekkdvListesi*' aranır."""
-    c = [p for p in dosyalari_bul(klasor, '*.xls', alt_klasorler=False)
-         if 'indirilecek kdv listesi' in katla(p.name).lower()]
-    return c or dosyalari_bul(klasor, '*indirilecekkdvListesi*')
 
 
 def _vkn(v):
@@ -55,10 +47,6 @@ def donem_degeri(v):
     return (y, a) if 1 <= a <= 12 else None
 
 
-def takip_bul(klasor):
-    return dosyalari_bul(klasor, '01 FİRMA*')
-
-
 def takip_oku(path):
     """Karşıt inceleme takip listesi: sütun 2 firma, 3 KDV, 4 açıklama/e-posta, 5 SMMM, 6 YMM."""
     out = []
@@ -68,10 +56,6 @@ def takip_oku(path):
                 return str(r[i]).strip() if len(r) > i and r[i] is not None else ''
             out.append({'firma': str(r[2]).strip(), 'kdv': float(r[3]), 'aciklama': s(4), 'smmm': s(5), 'ymm': s(6)})
     return out
-
-
-def yuklenilen_bul(klasor):
-    return dosyalari_bul(klasor, 'yüklenilen tutanak*.xls*')
 
 
 def yuklenilen_oku(path):

@@ -1,13 +1,9 @@
 """Teminat mektubu kabul dilekçesi (.docx): tür bazında teminat tutarları, toplam, mektup tarihi/no, banka."""
 import re
 
-from ..ortak import dosyalari_bul, num
+from ..ortak import num
 
 KODLAR = ['301', '410', '339', '318', '701', '448']
-
-
-def dilekce_bul(klasor):
-    return dosyalari_bul(klasor, 'TEMİNAT MEKTUBU KABUL*.docx') or dosyalari_bul(klasor, 'TEMİNAT MEKTUBU KABUL*.doc')
 
 
 def dilekce_metni(path):

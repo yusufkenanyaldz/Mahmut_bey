@@ -87,9 +87,18 @@ def ayar_oku(yol=None):
     """Ayar dosyasını okur; yol None ise tüm varsayılanlarla boş ayar döner."""
     if yol is None:
         return FirmaAyari()
-    yol = Path(yol)
-    with open(yol, encoding='utf-8') as f:
-        d = yaml.safe_load(f) or {}
+    yol = Path(str(yol).strip().strip('"').strip("'"))
+    try:
+        with open(yol, encoding='utf-8') as f:
+            d = yaml.safe_load(f) or {}
+    except OSError as e:
+        raise ValueError(f'Ayar dosyası açılamadı: {yol} ({e.strerror})') from e
+    except yaml.YAMLError as e:
+        yer = getattr(e, 'problem_mark', None)
+        raise ValueError(f'Ayar dosyasında yazım hatası: {yol.name}'
+                         + (f', satır {yer.line + 1}' if yer else '') + ' — girintileri ve iki nokta üst üsteleri kontrol edin.') from e
+    if not isinstance(d, dict):
+        raise ValueError(f'{yol.name}: ayar dosyası "alan: değer" satırlarından oluşmalı.')
     a = FirmaAyari(_yol=yol)
     bilinen = {k for k in FirmaAyari.__dataclass_fields__ if not k.startswith('_')}
     bilinmeyen = set(d) - bilinen

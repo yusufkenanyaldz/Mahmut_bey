@@ -87,9 +87,16 @@ class Donem:
     def coz(cls, s):
         """'2026-02', '2026/2', 'ŞUBAT-2026', 'ŞUBAT/2026', '202602' biçimlerini okur."""
         s = nf(str(s)).strip()
-        m = re.fullmatch(r'(\d{4})[-/.](\d{1,2})', s) or re.fullmatch(r'(\d{4})(\d{2})', s)
+        m = (re.fullmatch(r'(\d{4})\s*[-/.]\s*(\d{1,2})', s) or re.fullmatch(r'(\d{4})(\d{2})', s))
         if m:
+            if not 1 <= int(m.group(2)) <= 12:
+                raise ValueError(f'Dönemdeki ay 1-12 arasında olmalı: {s!r}')
             return cls(int(m.group(1)), int(m.group(2)))
+        m = re.fullmatch(r'(\d{1,2})\s*[-/.]\s*(\d{4})', s)
+        if m:
+            if not 1 <= int(m.group(1)) <= 12:
+                raise ValueError(f'Dönemdeki ay 1-12 arasında olmalı: {s!r}')
+            return cls(int(m.group(2)), int(m.group(1)))
         m = re.fullmatch(r'(\w+)\s*[-/ ]\s*(\d{4})', s)
         if m and ay_no(m.group(1)):
             return cls(int(m.group(2)), ay_no(m.group(1)))
@@ -126,24 +133,55 @@ def dosya_bul(klasor, desen, alt_klasorler=True):
     return c[0] if c else None
 
 
-def xrows(path):
-    """(sayfa adı, hücre değerleri listesi) üretir; .xls için xlrd, diğerleri için openpyxl."""
-    path = str(path)
-    if path.lower().endswith('.xls'):
-        import xlrd
-        wb = xlrd.open_workbook(path)
-        for sh in wb.sheets():
-            for i in range(sh.nrows):
-                yield sh.name, [c.value for c in sh.row(i)]
-    else:
+def excel_turu(path):
+    """Dosyanın ilk baytlarına göre 'xlsx' / 'xls' / None (uzantıya güvenilmez: GİB'den inen '.xls' bazen .xlsx'tir)."""
+    try:
+        with open(path, 'rb') as f:
+            bas = f.read(8)
+    except OSError:
+        return None
+    if bas.startswith(b'PK'):                   # .docx da zip'tir: içinde çalışma kitabı olmalı
+        import zipfile
+        try:
+            with zipfile.ZipFile(path) as z:
+                return 'xlsx' if any(a.lower().startswith('xl/workbook') for a in z.namelist()) else None
+        except (OSError, zipfile.BadZipFile):
+            return None
+    if bas.startswith(b'\xd0\xcf\x11\xe0'):
+        return 'xls'
+    return None
+
+
+def excel_satirlari(path, en_cok=None):
+    """(sayfa adı, hücre değerleri listesi) üretir; biçim uzantıdan değil içerikten anlaşılır. en_cok: sayfa başına satır."""
+    tur = excel_turu(path)
+    if tur == 'xlsx':
+        import io
+
         import openpyxl
-        wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+        with open(path, 'rb') as f:
+            wb = openpyxl.load_workbook(io.BytesIO(f.read()), read_only=True, data_only=True)
         try:
             for ws in wb.worksheets:
-                for r in ws.iter_rows(values_only=True):
+                for i, r in enumerate(ws.iter_rows(values_only=True)):
+                    if en_cok is not None and i >= en_cok:
+                        break
                     yield ws.title, list(r)
         finally:
             wb.close()
+    elif tur == 'xls':
+        import xlrd
+        wb = xlrd.open_workbook(str(path))
+        for sh in wb.sheets():
+            for i in range(sh.nrows if en_cok is None else min(sh.nrows, en_cok)):
+                yield sh.name, [c.value for c in sh.row(i)]
+    else:
+        raise ValueError(f'{Path(path).name}: Excel dosyası değil (içeriği .xls / .xlsx biçiminde değil)')
+
+
+def xrows(path):
+    """(sayfa adı, hücre değerleri listesi) üretir."""
+    yield from excel_satirlari(path)
 
 
 def para_bul(metin):

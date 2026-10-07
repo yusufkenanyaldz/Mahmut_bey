@@ -16,6 +16,13 @@ def pdf_metni(path):
         return '\n'.join((p.extract_text() or '') for p in pdf.pages)
 
 
+def pdf_ilk_sayfa(path):
+    """Belge tanıma için yalnızca ilk sayfanın metni."""
+    import pdfplumber
+    with pdfplumber.open(str(path)) as pdf:
+        return (pdf.pages[0].extract_text() or '') if pdf.pages else ''
+
+
 def kdv1_bul(klasor):
     """Klasörün kendisindeki 1 No.lu beyanname PDF'i ('KDV 1.pdf', 'KDV1.pdf', 'KDV..pdf')."""
     klasor = Path(klasor)

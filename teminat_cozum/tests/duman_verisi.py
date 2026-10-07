@@ -3,7 +3,9 @@
     python tests/duman_verisi.py <hedef klasör>
 
 <hedef>/ORNEK/2026/02 ŞUBAT/RAPOR/ŞUBAT-2026 RAPOR.docx (şablon), <hedef>/ORNEK/2026/03 MART/... (girdiler),
-<hedef>/ayar.yaml. Derlenen .exe'nin uçtan uca çalıştığını (pdfplumber dahil) denemek için kullanılır.
+<hedef>/ayar.yaml; ayrıca dosya adları ve klasör düzeni karışık bir firma: <hedef>/KARISIK/.../teminat - şub (girdiler,
+belgeler yalnızca içerikten tanınabilir). Derlenen .exe'nin uçtan uca çalıştığını (pdfplumber dahil) denemek için
+kullanılır. Çıktı (ilk satır): düzenli firmanın MART klasörü; ikinci satır: karışık firmanın ŞUBAT klasörü.
 """
 import sys
 from pathlib import Path
@@ -28,8 +30,10 @@ def uret(hedef):
     (hedef / 'ayar.yaml').write_text('kisa_ad: ÖRNEK\nymm_no: "00000000"\nrapor_referanslari:\n'
                                      '  OCAK/2026: {tarih: "15.04.2026", sayi: "2026-50"}\n'
                                      '  ŞUBAT/2026: {tarih: "20.05.2026", sayi: "2026-60"}\n', encoding='utf-8')
-    return kok
+    karisik, _ = S.karisik_firma(hedef / 'KARISIK', gercek_pdf=True)
+    return g, karisik
 
 
 if __name__ == '__main__':
-    print(uret(sys.argv[1]))
+    for k in uret(sys.argv[1]):
+        print(k)

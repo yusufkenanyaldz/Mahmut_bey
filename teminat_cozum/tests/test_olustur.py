@@ -198,6 +198,7 @@ def test_taslak_uret_dosyalari_ve_uzerine_yazmaz(ay, ayar, tmp_path):
     assert b.docx.name == 'MART-2026 RAPOR TASLAK (2).docx' and a.docx.exists()
     from openpyxl import load_workbook
     wb = load_workbook(a.xlsx)
-    assert wb.sheetnames == ['Kontrol Listesi', 'Özet', 'Safha (3-4-3)']
+    assert wb.sheetnames == ['Kontrol Listesi', 'Özet', 'Belgeler', 'Safha (3-4-3)']
+    assert any(r[1] == 'KDV1' and r[4] == 'KULLANILDI' for r in wb['Belgeler'].iter_rows(values_only=True))
     assert wb['Kontrol Listesi'].cell(1, 1).value == 'Durum'
     assert 'Kontrol Listesi' in a.html.read_text(encoding='utf-8')

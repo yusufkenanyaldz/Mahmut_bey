@@ -13,6 +13,7 @@ from docx import Document
 from teminat.ortak import Donem, tr
 
 ITH = '1111111111'
+FIRMA_VKN = '9876543210'          # uydurma
 
 
 @dataclass
@@ -150,8 +151,10 @@ AY_PDF = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağ
 
 
 def kdv1_metni(s: Senaryo):
-    L = ['KATMA DEĞER VERGİSİ BEYANNAMESİ', 'Vergilendirme Dönemi Tipi Aylık',
-         f'Yıl {s.donem.yil}', f'Ay {AY_PDF[s.donem.ay - 1]}', 'MATRAH', 'TEVKİFAT UYGULANMAYAN İŞLEMLER',
+    L = ['KATMA DEĞER VERGİSİ BEYANNAMESİ', 'Gerçek Usulde Katma Değer Vergisi Mükellefleri İçin',
+         'Vergilendirme Dönemi Tipi Aylık', f'Yıl {s.donem.yil}', f'Ay {AY_PDF[s.donem.ay - 1]}',
+         f'Vergi Kimlik Numarası {FIRMA_VKN}', 'Soyadı (Unvanı) ÖRNEK METAL SAN. TİC. A.Ş.',
+         'MATRAH', 'TEVKİFAT UYGULANMAYAN İŞLEMLER',
          'İşlem Türü Matrah KDV Oranı Vergi']
     if s.r701:
         L.append(f'İhracatı Yapılacak Nihai Ürünlerin Kanunun 11/1-c Maddesi Kapsamında Teslimi {tr(s.r701[0])} {s.r701[1]} {tr(s.r701[2])}')
@@ -265,7 +268,8 @@ def yuklenilen_satirlari(s: Senaryo):
         o = d.onceki()
         yuk = [('GAMA DEMİR SAN. A.Ş.', '0010000003', 300_000.00, (d.yil, d.ay)),
                ('ALFA ÇELİK SAN. VE TİC. A.Ş.', '0010000001', 100_000.00, (o.yil, o.ay))]
-    rows = [['', 'SIRA', 'TARİH', 'NO', 'SATICI', 'VKN', '', '', '', '', 'KDV', '', 'KOD', '', '', 'DÖNEM']]
+    rows = [['YÜKLENİLEN KDV TUTANAK ÇALIŞMASI'],
+            ['', 'SIRA', 'TARİH', 'NO', 'SATICI', 'VKN', '', '', '', '', 'Bünyeye Giren KDV', '', 'KOD', '', '', 'DÖNEM']]
     for i, (f, v, kdv, (yy, mm)) in enumerate(yuk, 1):
         rows.append(['', float(i), _seri(datetime.date(yy, mm, 10)), f'F{i}', f, v, '', '', '', '', kdv, '', '301', '', '', float(yy * 100 + mm)])
     return rows
@@ -328,7 +332,7 @@ def _dikey(t, sutun, r0, r1):
         a.merge(t.cell(r1, sutun))
 
 
-def sablon_docx(path, s: Senaryo, rapor_sayisi='2026-10'):
+def sablon_docx(path, s: Senaryo, rapor_sayisi='2026-10', vkn=FIRMA_VKN):
     """s: ŞABLONUN (önceki ayın) senaryosu. Ofis raporunun yapısını taklit eden bir rapor üretir."""
     d, D = s.donem, Document()
     p = D.add_paragraph
@@ -339,6 +343,7 @@ def sablon_docx(path, s: Senaryo, rapor_sayisi='2026-10'):
              (['Dayanak Sözleşmenin', 'Günü', '04.03.2026'], [(0, 1), (2, 2), (3, 4)]),
              (['Dayanak Sözleşmenin', 'Sayısı', '46'], [(0, 1), (2, 2), (3, 4)]),
              (['Mükellefin', 'Unvanı', 'Örnek Metal San. Tic. A.Ş.'], [(0, 1), (2, 2), (3, 4)]),
+             (['Mükellefin', 'Hesap No’ su', ' '.join([vkn[:3], vkn[3:6], vkn[6:]])], [(0, 1), (2, 2), (3, 4)]),
              (['İncelemenin Dönemi', d.tire], [(0, 2), (3, 4)]),
              (['SONUÇ', 'Raporun Sonuç Bölümünde Açıklanmıştır.'], [(0, 2), (3, 4)])]
     _tablo(D, kapak, 5)
@@ -520,6 +525,11 @@ def yazi_tipi():
 
 def kdv1_pdf(path, s: Senaryo):
     """KDV 1 metnini satır satır gerçek bir PDF'e yazar (Türkçe karakterli TTF yazı tipiyle)."""
+    return metin_pdf(path, kdv1_metni(s))
+
+
+def metin_pdf(path, metin):
+    """Metni satır satır gerçek bir PDF'e yazar."""
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
@@ -530,7 +540,7 @@ def kdv1_pdf(path, s: Senaryo):
     pdfmetrics.registerFont(TTFont('Sentetik', yt))
     c = canvas.Canvas(str(path), pagesize=A4)
     y = A4[1] - 30
-    for satir in kdv1_metni(s).splitlines():
+    for satir in metin.splitlines():
         if y < 30:
             c.showPage()
             y = A4[1] - 30
@@ -539,3 +549,80 @@ def kdv1_pdf(path, s: Senaryo):
         y -= 11
     c.save()
     return Path(path)
+
+
+# ---------------------------------------------------------------- dosya adları ve düzeni karışık firma klasörü (§13)
+def _docx_yaz(path, paragraflar):
+    d = Document()
+    for p in paragraflar:
+        d.add_paragraph(p)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    d.save(str(path))
+    return Path(path)
+
+
+def _xlsx_yaz(path, satirlar):
+    """openpyxl ile .xlsx içerik yazar (uzantı .xls olsa bile — GİB'den inen dosyalar gibi)."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    for r in satirlar:
+        ws.append([None if v == '' else v for v in r])
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    wb.save(str(path))
+    return Path(path)
+
+
+def karisik_firma(kok, gercek_pdf=False):
+    """Dosya adları ve klasör düzeni hiçbir standarda uymayan bir firma klasörü kurar. Dönüş: (şubat klasörü, sözlük).
+
+    ŞUBAT-2026 klasöründe: beyanname (adı 'beyan_subat'), aynı klasörün SİSTEM alt klasöründe OCAK'a ait eski bir
+    indirilecek liste, uzantısı .xls olup içi .xlsx olan asıl liste, iki yüklenilen listesi (biri toplamı tutmayan),
+    Ocak'a ait eski bir teminat dilekçesi, KİT tutanağı, YMM yazısı, KDV 2, fatura PDF'leri, macOS '._' çöpü.
+    OCAK-2026 klasöründe (adı 'evraklar ocak') ofisin bitmiş raporu 'son hali/ocak.docx'. Yan klasörde başka bir firmanın
+    aynı dönem raporu (farklı VKN) — şablon olarak seçilmemeli.
+    """
+    kok = Path(kok)
+
+    def pdf(yol, metin):
+        if gercek_pdf:
+            metin_pdf(yol, metin)
+        else:
+            yol.write_text(metin, encoding='utf-8')
+    oca = Senaryo(Donem(2026, 1))
+    sub = Senaryo(Donem(2026, 2), devreden_onceki=oca.sonraki_devreden)
+    ocak = kok / 'ÖRNEK METAL' / '26' / 'evraklar ocak'
+    subat = kok / 'ÖRNEK METAL' / '26' / 'teminat - şub'
+    # Ocak: yalnızca bitmiş rapor + beyanname (geriye dönük test için)
+    ocak.mkdir(parents=True)
+    pdf(ocak / 'kdv.pdf', kdv1_metni(oca))
+    (ocak / 'son hali').mkdir()
+    sablon_docx(ocak / 'son hali' / 'ocak.docx', oca)
+    # başka firmanın aynı dönem raporu (yan klasör)
+    (kok / 'ÖRNEK METAL' / '26' / 'karışık').mkdir(parents=True)
+    sablon_docx(kok / 'ÖRNEK METAL' / '26' / 'karışık' / 'rapor.docx', oca, vkn='1234567890')
+    # Şubat
+    subat.mkdir(parents=True)
+    pdf(subat / 'beyan_subat.pdf', kdv1_metni(sub))
+    (subat / '._beyan_subat.pdf').write_bytes(b'\x00\x05\x16\x07macOS cop')
+    pdf(subat / 'kdv2.pdf', 'KATMA DEĞER VERGİSİ BEYANNAMESİ\nVergi Sorumluları İçin (2 No.lu)\n')
+    _xlsx_yaz(subat / 'liste.xls', indirilecek_satirlari(sub))                        # uzantı .xls, içerik .xlsx
+    eski = senaryo_kopya(oca)
+    (subat / 'SİSTEM').mkdir()
+    _xls(subat / 'SİSTEM' / 'liste.xls', indirilecek_satirlari(eski))      # klasörde kalmış OCAK listesi
+    _xls(subat / 'muh bilgi.xls', takip_satirlari(sub))
+    (subat / 'çalışma').mkdir()
+    _xls(subat / 'çalışma' / 'yük.xls', yuklenilen_satirlari(sub))
+    yanlis = senaryo_kopya(sub, yuklenilen=[('ZZZ A.Ş.', '0000000099', 12_345.00, (2026, 2))])
+    _xls(subat / 'gib yuk listesi.xls', yuklenilen_satirlari(yanlis))
+    dilekce_docx(subat / 'dilekce.docx', sub)
+    (subat / 'eski').mkdir()
+    dilekce_docx(subat / 'eski' / 'dilekce ocak.docx', oca)
+    _docx_yaz(subat / 'tutanak' / 'alfa.docx', ['KARŞIT İNCELEME TUTANAĞI', 'Alfa Çelik ile yapılan karşıt inceleme…'])
+    _docx_yaz(subat / 'tutanak' / 'yazı.docx', ['Sayı: YMM/2026-1', 'Konu: Bilgi İsteme', 'Sayın yetkili…'])
+    _xlsx_yaz(subat / 'imalat.xlsx', [['ŞUBAT 2026 İMALAT TABLOSU'], ['Mamul', 'Miktar'], ['Sac', 100]])
+    (subat / '301').mkdir()
+    for i in range(3):
+        pdf(subat / '301' / f'fatura{i}.pdf', f'e-Arşiv Fatura No ABC2026{i:09d}\nToplam 1.000,00')
+    (subat / '301' / 'tarama.jpg').write_bytes(b'\xff\xd8\xff')
+    return subat, {'ocak': oca, 'subat': sub, 'sablon': ocak / 'son hali' / 'ocak.docx'}

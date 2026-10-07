@@ -76,6 +76,23 @@ def xlsx_yaz(kl, ozet, yol):
     oz.column_dimensions['B'].width = 40
     oz.column_dimensions['C'].width = 60
 
+    if ozet.get('belgeler'):
+        bg = wb.create_sheet('Belgeler')
+        bg.append(['Dosya', 'Tür', 'Açıklama', 'Dönem', 'Kullanım', 'Not'])
+        for c in bg[1]:
+            c.font = Font(bold=True)
+        for satir in ozet['belgeler']:
+            bg.append(list(satir))
+            r = bg.max_row
+            if satir[4]:
+                bg.cell(r, 5).font = Font(bold=True)
+            for col in (1, 3, 6):
+                bg.cell(r, col).alignment = Alignment(wrap_text=True, vertical='top')
+        for col, w in zip('ABCDEF', (60, 22, 45, 16, 14, 60)):
+            bg.column_dimensions[col].width = w
+        bg.freeze_panes = 'A2'
+        bg.auto_filter.ref = f'A1:F{bg.max_row}'
+
     if ozet.get('takip'):
         sf = wb.create_sheet('Safha (3-4-3)')
         sf.append(['Rapor durumu', 'Firma', 'İnceleme şekli', 'Takip KDV', 'İndirilecek liste KDV', 'Fark'])
@@ -102,6 +119,12 @@ def html_yaz(kl, ozet, yol, baslik='Kontrol Listesi'):
             f'<td>{e(k.aciklama)}</td><td>{e(k.yer)}</td><td class="sayi">{e(k.beklenen)}</td>'
             f'<td class="sayi">{e(k.bulunan)}</td><td>{e(k.no)}</td></tr>')
     ozet_html = ''.join(f'<tr><th>{e(a)}</th><td>{e(b)}</td></tr>' for a, b in _ozet_satirlari(ozet))
+    belgeler_html = ''
+    if ozet.get('belgeler'):
+        bs = ''.join('<tr>' + ''.join(f'<td>{e(str(x))}</td>' for x in s_) + '</tr>' for s_ in ozet['belgeler'])
+        belgeler_html = ('<h2 style="font-size:16px">Belge tanıma (içerikten)</h2><table class="belgeler"><thead><tr>'
+                         '<th>Dosya</th><th>Tür</th><th>Açıklama</th><th>Dönem</th><th>Kullanım</th><th>Not</th></tr></thead>'
+                         f'<tbody>{bs}</tbody></table>')
     sayac = ''.join(f'<span class="rozet r-{d}">{d}: {kl.say(d)}</span> ' for d in DURUMLAR)
     filtre = ''.join(f'<label><input type="checkbox" checked data-d="{d}"> {d}</label> ' for d in DURUMLAR)
     stil = ''.join(f'.r-{d}{{background:#{RENK[d]};color:#{RENK_YAZI[d]}}}' for d in DURUMLAR)
@@ -125,6 +148,7 @@ thead th{{background:#f3f4f6;position:sticky;top:0}} td.sayi{{white-space:nowrap
 <table><thead><tr><th>Durum</th><th>Konu</th><th>Açıklama</th><th>Yer</th><th>Beklenen</th><th>Bulunan</th><th>Md.</th></tr></thead>
 <tbody>{''.join(satirlar)}</tbody></table>
 <h2 style="font-size:16px">Özet</h2><table class="ozet">{ozet_html}</table>
+{belgeler_html}
 <script>
 document.querySelectorAll('.filtre input').forEach(function(c){{c.addEventListener('change',function(){{
 document.querySelectorAll('tbody tr.'+CSS.escape(c.dataset.d)).forEach(function(r){{r.style.display=c.checked?'':'none'}})}})}});

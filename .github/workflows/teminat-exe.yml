@@ -41,19 +41,24 @@ jobs:
           --paths .
           TeminatCozum.py
 
-      - name: Duman testi — gerçek PDF ile uçtan uca taslak
+      - name: Duman testi — gerçek PDF ile uçtan uca taslak (düzenli ve karışık adlı klasör)
         shell: pwsh
         run: |
+          $env:PYTHONUTF8 = '1'                                   # klasör adlarında Türkçe karakter var
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $hedef = Join-Path $env:RUNNER_TEMP 'duman'
-          python tests/duman_verisi.py $hedef
-          $arg = "taslak --ayar $hedef\ayar.yaml --kok $hedef\ORNEK --donem 2026-03"
-          $p = Start-Process -FilePath dist\TeminatCozum.exe -ArgumentList $arg -Wait -PassThru
-          Get-Content dist\teminat_son_calisma.log -Encoding utf8
-          if ($p.ExitCode -ne 0) { Write-Error "Taslak üretimi çıkış kodu: $($p.ExitCode)"; exit 1 }
-          $dosyalar = Get-ChildItem -Path "$hedef\ORNEK\2026" -Recurse -File | Where-Object { $_.DirectoryName -like '*CLAUDE TASLAK' }
-          $dosyalar | ForEach-Object { Write-Host $_.FullName }
-          if (($dosyalar | Where-Object { $_.Extension -in '.docx', '.xlsx', '.html' }).Count -ne 3) {
-            Write-Error "Taslak / kontrol listesi dosyaları oluşmadı"; exit 1
+          $klasorler = @(python tests/duman_verisi.py $hedef)
+          if ($klasorler.Count -ne 2) { Write-Error "Duman verisi üretilemedi"; exit 1 }
+          foreach ($k in $klasorler) {
+            Write-Host "=== $k"
+            $p = Start-Process -FilePath dist\TeminatCozum.exe -ArgumentList @('taslak', "`"$k`"", '--ayar', "`"$hedef\ayar.yaml`"") -Wait -PassThru
+            Get-Content dist\teminat_son_calisma.log -Encoding utf8
+            if ($p.ExitCode -ne 0) { Write-Error "Taslak üretimi çıkış kodu: $($p.ExitCode)"; exit 1 }
+            $dosyalar = Get-ChildItem -LiteralPath (Join-Path $k 'CLAUDE TASLAK') -File
+            $dosyalar | ForEach-Object { Write-Host $_.FullName }
+            if (($dosyalar | Where-Object { $_.Extension -in '.docx', '.xlsx', '.html' }).Count -ne 3) {
+              Write-Error "Taslak / kontrol listesi dosyaları oluşmadı: $k"; exit 1
+            }
           }
 
       - name: Duman testi — pencere açılıyor mu

@@ -19,15 +19,18 @@ GitHub'da her değişiklikte Windows için tek dosyalık program derlenir ve tes
 1. `TeminatCozum.exe`'yi bir klasöre koyun (ör. `C:\TeminatCozum\`).
 2. Firma ayar dosyasını yanına koyun: `C:\TeminatCozum\firmalar\<firma>\ayar.yaml` (örnek: `ayar.yaml`).
 3. Ofis raporları `.doc` ise LibreOffice kurulu olmalı.
-4. `.exe`'ye çift tıklayın ve pencerede:
+4. `.exe`'ye çift tıklayın (ya da ayın klasörünü `.exe`'nin üzerine sürükleyin) ve pencerede:
    - **Ayar dosyası**: `firmalar\<firma>\ayar.yaml`
-   - **Klasör**: en kolayı doğrudan **bu ayın klasörünü** (KDV 1.pdf'in olduğu klasör, ör. `...\2026\03 MART`) seçmek;
-     dönem beyannameden okunur. Firma klasörünü (`...\TEMİNAT ÇÖZÜMÜ\<FİRMA>`) seçerseniz dönemi yazın (ör. `2026-03`).
-   - **Önceki ayın raporu**: boş bırakın; program önceki ayın klasöründe arar. Bulamazsa buradan kendiniz seçin.
-   - **Klasörleri bul**: neyin bulunduğunu gösterir (bu ayın klasörü, dönem, şablon). **Taslak oluştur**: taslağı üretir.
+   - **Bu ayın klasörü**: firmanın o ayki belgelerinin bulunduğu klasör — adı ve içindeki düzen ne olursa olsun.
+   - **Önceki ayın raporu**: boş bırakın; program çevredeki Word dosyalarında **içerikten** arar
+     (kapaktaki dönem ve mükellef VKN'si). Bulamazsa ya da birden fazla aday varsa buradan kendiniz seçin.
+   - **1) Belgeleri tanı**: klasördeki her dosyayı açıp türünü **içeriğinden** bulur ve tanıma tablosunu gösterir
+     (hangi dosya beyanname, hangisi indirilecek liste, hangisi kullanılacak, hangisi eksik). Türü yanlış görünen
+     satıra çift tıklayıp düzeltebilirsiniz; düzeltme sonraki aylarda da hatırlanır.
+   - **2) Taslak oluştur**: tanımaya göre taslağı ve kontrol listesini üretir.
    Pencerede ayrıca "Gerçek raporla karşılaştır", "Rapor denetle" ve "Geriye dönük test" düğmeleri vardır.
 
-`.exe` komut satırından da çalışır (`TeminatCozum.exe taslak --ayar ... --kok ... --donem 2026-03`); konsolu olmadığı
+`.exe` komut satırından da çalışır (`TeminatCozum.exe taslak "<ayın klasörü>" --ayar ...`); konsolu olmadığı
 için çıktı yanındaki `teminat_son_calisma.log` dosyasına yazılır. Python ile çalıştırmak için aşağıdaki kurulum.
 
 ## Kurulum (Python ile)
@@ -46,28 +49,33 @@ pip install -r requirements.txt
 
 Bütün komutlar bu klasörden (`teminat_cozum`) çalıştırılır. Pencereli arayüz: `python -m teminat arayuz`.
 
-### Aylık taslak
+### Belgeleri tanıma ve aylık taslak
 
-Firma klasörü standart düzendeyse (bkz. aşağı) dönem vermek yeterli; şablon olarak bir önceki ayın
-`RAPOR\` klasöründeki rapor kullanılır:
-
-```
-python -m teminat taslak --ayar firmalar\<firma>\ayar.yaml --kok "C:\...\TEMİNAT ÇÖZÜMÜ\<FİRMA>" --donem 2026-03
-```
-
-Şablonu ve girdi klasörünü ayrı ayrı da verebilirsiniz:
+Programa yalnızca **firmanın o ayki klasörü** verilir. Dosya adlarına ve klasör düzenine bakılmaz; her belge
+içeriğinden tanınır (bkz. aşağıda "Belgeler nasıl tanınır"). Önce yalnızca tanıma tablosunu görmek için:
 
 ```
-python -m teminat taslak --ayar firmalar\<firma>\ayar.yaml --sablon "...\02 ŞUBAT\RAPOR\ŞUBAT-2026 RAPOR.doc" --girdi "...\2026\03 MART"
+python -m teminat tani "C:\...\<firmanın o ayki klasörü>" --ayar firmalar\<firma>\ayar.yaml
 ```
 
-Çıktılar (girdi klasörünün içinde, `CLAUDE TASLAK\` altında; aynı adlı dosya varsa üzerine yazılmaz, `(2)` eklenir):
+Taslak (önce aynı tanıma tablosunu yazar, sonra taslağı üretir):
+
+```
+python -m teminat taslak "C:\...\<firmanın o ayki klasörü>" --ayar firmalar\<firma>\ayar.yaml
+```
+
+Program bir belge için karar veremezse (ör. aynı dönemin iki farklı beyannamesi) adayları listeler ve durur;
+hangisinin kullanılacağını `--sec ROL="dosya"` ile (pencerede açılan seçim kutusundan) belirtirsiniz. Şablonu elle
+vermek için `--sablon "<önceki ayın raporu.doc>"`; klasörde birden fazla dönemin beyannamesi varsa `--donem 2026-03`.
+
+Çıktılar (ayın klasörünün içinde, `CLAUDE TASLAK\` altında; aynı adlı dosya varsa üzerine yazılmaz, `(2)` eklenir):
 
 | Dosya | İçerik |
 |---|---|
 | `MART-2026 RAPOR TASLAK.docx` | Rapor taslağı. Elle doldurulacak yerler ve kontrol edilecek satırlar sarı. |
-| `MART-2026 KONTROL LİSTESİ.xlsx` | Kontrol listesi + özet + safha (EKLİ seçimi) sayfası |
+| `MART-2026 KONTROL LİSTESİ.xlsx` | Kontrol listesi + özet + **belgeler (tanıma tablosu)** + safha (EKLİ seçimi) sayfası |
 | `MART-2026 KONTROL LİSTESİ.html` | Aynı kontrol listesi, tarayıcıda açılır (durum filtresiyle) |
+| `MART-2026 FARKLAR.txt` | Yalnızca ofisin bu ayki bitmiş raporu da klasördeyse: taslakla karşılaştırma |
 
 Kontrol listesindeki durumlar:
 
@@ -90,11 +98,11 @@ tutarlar). Hedef: tutar farkı 0. Her fark ya bir kurala dönüştürülür ya d
 
 ### Geriye dönük test
 
-Firma klasöründeki her ay için taslağı bir önceki ayın gerçek raporundan üretir ve o ayın gerçek raporuyla
-karşılaştırır:
+Firma klasörünün altındaki her ayı (beyannamelerden) bulur; her ay için taslağı bir önceki ayın gerçek raporundan
+üretir ve o ayın gerçek raporuyla karşılaştırır. Ay klasörlerinin adı ve düzeni önemli değildir:
 
 ```
-python -m teminat geriye-donuk --ayar firmalar\<firma>\ayar.yaml --kok "C:\...\TEMİNAT ÇÖZÜMÜ\<FİRMA>" --baslangic 2025-01 --bitis 2026-02
+python -m teminat geriye-donuk "C:\...\<FİRMA>" --ayar firmalar\<firma>\ayar.yaml --baslangic 2025-01 --bitis 2026-02
 ```
 
 Sonuç: `<FİRMA>\CLAUDE TASLAK\GERİYE DÖNÜK TEST\GERİYE DÖNÜK TEST.xlsx` (dönem başına tutar farkı, farklı satır
@@ -109,29 +117,35 @@ python -m teminat denetle "...\ARALIK-2025 RAPOR.doc"
 3-4-3 safha tablosunda satır toplamı ↔ TOPLAM hücreleri, EKLİ sıra numaraları, aynı tutarın iki firmada
 görünmesi (satır kayması) ve %80 oranını kontrol eder.
 
-## Girdi klasörü standardı
+## Belgeler nasıl tanınır (dosya adı ve klasör düzeni önemsizdir)
 
-Klasör adları esnek tanınır: ay klasörünün adında ay adı (`02 ŞUBAT`, `02 ŞUBAT (GİRDİ)`, `ESKA 12- ARALIK`, `Şubat 2026`,
-`SUBAT`) ya da başında ay numarası (`02`, `3- GİRDİ`) ya da `2026-02` biçimi olması yeterlidir. Yıl, klasör adından ya da üst
-klasörlerden (`2026`, `2026 YILI`) anlaşılır; anlaşılamazsa KDV 1 beyannamesinden okunur. Önceki ayın raporu, önceki ayın
-klasöründeki `RAPOR...` alt klasöründe ya da adında RAPOR geçen Word dosyası olarak aranır. Bir şey bulunamazsa hata mesajı
-programın gördüğü ay klasörlerini listeler; `python -m teminat klasor --kok ... --donem ...` (ya da penceredeki
-"Klasörleri bul") yalnızca bulma adımını çalıştırır.
+Seçilen klasördeki (alt klasörler dahil) her dosyanın ilk kısmı okunur — PDF'in ilk sayfası, Excel'in ilk satırları,
+Word'ün ilk paragrafları ve tabloları, `.doc` için LibreOffice — ve içindeki ifadelere göre türü belirlenir
+(`teminat/tanima.py`, `KURALLAR`). Uzantısı `.xls` olup içi `.xlsx` olan dosyalar (GİB'den inenler) içeriğinden açılır.
 
-Önerilen düzen:
+| Tür | Tanıma (içerikte geçen) | Raporda |
+|---|---|---|
+| KDV1 | "KATMA DEĞER VERGİSİ BEYANNAMESİ … Gerçek Usulde" | zorunlu; dönem buradan okunur |
+| LISTE_INDIRILECEK | "İndirilecek KDV listesi", "Toplam İndirilen KDV", "Alış Faturasının Tarihi … Satıcının" | zorunlu |
+| TAKIP | "FİRMA … AÇIKLAMA SMMM YMM" başlıklı takip listesi | zorunlu |
+| TEMINAT_DILEKCE | "teminat mektubu … kabul", "Artırımlı / İndirimli Teminat" | zorunlu |
+| LISTE_YUKLENILEN | "Yüklenilen KDV listesi", "Bünyeye Giren" | beyanda 301 yüklenilen varsa |
+| RAPOR | "GENEL BİLGİ … Raporun amacı" | önceki ayınki şablon; bu ayınki varsa karşılaştırma |
+| KDV2, KIT, YMM_YAZISI, IMALAT, LISTE_GCB, SGK_LISTE, … (30'a yakın tür) | | şimdilik yalnızca listelenir |
+| TARANMIS / BILINMEYEN / OKUNAMADI | metni olmayan PDF ya da görüntü / hiçbir kurala uymayan / açılamayan | listelenir |
 
-```
-TEMİNAT ÇÖZÜMÜ\<FİRMA>\2026\02 ŞUBAT\
-    KDV 1.pdf                                   ← 1 No.lu KDV beyannamesi (zorunlu)
-    internetvd_kdviadesi_indirilecekkdvListesi_FORMATI.xls   (veya "İndirilecek KDV listesi ... .xls") (zorunlu)
-    yüklenilen tutanak çalışması.xls
-    TEMİNAT MEKTUBU KABUL DİLEKÇESİ - ŞUBAT 2026.docx
-    TUTANAK ÇALIŞMASI\01 FİRMA VE MUH. BİLGİLERİ ŞUBAT 2026.xls   ← karşıt inceleme takip listesi (zorunlu)
-    RAPOR\ŞUBAT-2026 RAPOR.doc                  ← ofisin bitmiş raporu (bir sonraki ayın şablonu)
-```
+Aynı türden birden fazla dosya varsa hangisinin kullanılacağı yine içerikten seçilir: indirilecek liste için dönem
+sütunu ve beyanla tutan toplam; takip listesi için indirilecek listeyle tutan tutarlar; dilekçe için andığı dönem;
+yüklenilen listesi için beyandaki 301 yüklenilen KDV'ye eşit toplam. Seçim ve gerekçesi kontrol listesine yazılır;
+karar verilemezse kullanıcıya sorulur. Klasör adı başka bir ayı gösteriyorsa (ör. "Mart" klasöründe Şubat beyannamesi)
+uyarı verilir. Zorunlu bir belge bulunamazsa tanıma tablosunda **✘ EKSİK** olarak gösterilir.
 
-Dosya adları küçük farklarla değişebilir: aramalar Türkçe karakter, büyük/küçük harf ve macOS/OneDrive kaynaklı
-NFD farkını gözetmez. Bir dosya için birden fazla aday varsa ilki seçilir ve kontrol listesine yazılır.
+**Tür düzeltmeleri:** pencerede tanıma tablosundaki satıra çift tıklayıp türü değiştirirseniz (ya da "yok sayılsın"),
+bu seçim firma ayar dosyasının yanındaki `belge_turleri.yaml`'a yazılır ve sonraki aylarda da uygulanır (anahtar,
+dosya adından ay ve yıl çıkarılmış hali: "liste ŞUBAT 2026.xls" ile "liste MART 2026.xls" aynı sayılır).
+
+Okunan dosyaların türü ve dönemi (metin değil) hız için kullanıcı klasöründe `.teminat_cozum\tanima_onbellek.json`
+dosyasında saklanır; dosya değişince yeniden okunur.
 
 ## Firma ayar dosyası
 
@@ -175,7 +189,10 @@ teminat/
   okuyucular/   kdv1.py (KDV 1 PDF), listeler.py (indirilecek / takip / yüklenilen), teminat.py (dilekçe), girdiler.py
   rapor/        olustur.py (taslak üretimi), safha.py (EKLİ seçimi), tablolar.py (tabloyu içerikten bulma), docx_araclari.py
   kontroller/   kurallar.py (sayısal kontroller), belge.py (Word üzerindeki kontroller), cikti.py (xlsx/html), liste.py
-  karsilastir.py, geriye_donuk.py, klasorler.py, donusum.py (.doc → .docx), ayar.py, cli.py, arayuz.py (pencere)
+  tanima.py     belgeleri içerikten tanıma, kullanılacak belgeyi ve şablonu seçme, tanıma tablosu
+  islem.py      tanıma + seçim + şablon arama adımları (komut satırı ve pencere ortak)
+  taslak.py     bir ayın taslağı + kontrol listesi
+  karsilastir.py, geriye_donuk.py, klasorler.py (klasör adından ay ipucu), donusum.py (.doc → .docx), ayar.py, cli.py, arayuz.py
 TeminatCozum.py   .exe giriş noktası (argümansız → pencere, argümanla → komut satırı)
-tests/duman_verisi.py   .exe duman testi için gerçek PDF'li sentetik firma klasörü
+tests/duman_verisi.py   .exe duman testi için gerçek PDF'li sentetik firma klasörleri (düzenli ve karışık adlı)
 ```
