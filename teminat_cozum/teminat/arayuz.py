@@ -23,6 +23,8 @@ from .donusum import soffice_yolu
 from .islem import duzeltme_dosyasi, hazirla, rol_adi, yol_temizle
 from .tanima import ACIKLAMA, TUR_LISTESI, BelirsizSecim, TurDuzeltmeleri
 
+OTOMATIK = 'OTOMATIK'
+
 HATIRLA = Path.home() / '.teminat_cozum.json'
 KULLANIM = {'KDV1': '✔ beyanname', 'LISTE_INDIRILECEK': '✔ indirilecek liste', 'TAKIP': '✔ takip listesi',
             'TEMINAT_DILEKCE': '✔ teminat dilekçesi', 'LISTE_YUKLENILEN': '✔ yüklenilen', 'BU_AYIN_RAPORU': '✔ karşılaştırma'}
@@ -74,12 +76,13 @@ class Uygulama(tk.Tk):
         self.hz = None              # son tanıma (islem.Hazirlik)
         self.zorla = {}             # kullanıcının belirsiz seçimlerde seçtikleri {rol: yol}
         self.son_cikti = None
+        self._sablon_klasoru = None  # "Önceki ayın raporu" hangi klasör için seçildi
         self._hatirla_yukle()
         if klasor:
             self.v_klasor.set(str(yol_temizle(klasor)))
         self._kur()
-        self.v_klasor.trace_add('write', lambda *_: self._sifirla())
-        self.v_sablon.trace_add('write', lambda *_: self._sifirla(zorla=False))
+        self.v_klasor.trace_add('write', lambda *_: self._klasor_degisti())
+        self.v_sablon.trace_add('write', lambda *_: self._sablon_degisti())
         self.v_ayar.trace_add('write', lambda *_: self._sifirla(zorla=False))
         self.after(100, self._kuyrugu_bosalt)
         self._yaz(
@@ -109,7 +112,10 @@ class Uygulama(tk.Tk):
 
         dugmeler = ttk.Frame(self, padding=(10, 0))
         dugmeler.pack(fill='x')
-        self.dugmeler = []
+        self.dugmeler = []          # iş sürerken kapatılanlar (alanlar dahil)
+        for w in ust.winfo_children():
+            if isinstance(w, (ttk.Entry, ttk.Button)):
+                self.dugmeler.append(w)
         for metin, komut in [('1) Belgeleri tanı', self.tani), ('2) Taslak oluştur', self.taslak),
                              ('Çıktı klasörünü aç', self.cikti_ac), ('Gerçek raporla karşılaştır…', self.karsilastir),
                              ('Rapor denetle…', self.denetle), ('Geriye dönük test…', self.geriye_donuk)]:
@@ -139,6 +145,8 @@ class Uygulama(tk.Tk):
         self.agac.bind('<Double-1>', self._tur_duzelt)
         self.agac.tag_configure('kullanilan', background='#e6f4ea')
         self.agac.tag_configure('sorun', foreground='#9a3412')
+        self.agac.tag_configure('uyari', background='#fff3cd', foreground='#664d03')
+        self.agac.tag_configure('hata', background='#f8d7da', foreground='#842029')
         self.metin = tk.Text(sekme2, wrap='word', font=('Consolas', 10) if sys.platform.startswith('win') else None)
         kay2 = ttk.Scrollbar(sekme2, command=self.metin.yview)
         self.metin.configure(yscrollcommand=kay2.set, state='disabled')
@@ -170,10 +178,26 @@ class Uygulama(tk.Tk):
             pass
 
     def _sifirla(self, zorla=True):
+        """Alanlar değişince eski tanıma geçersizdir: tablo temizlenir, taslak yeniden tanıma yapar."""
         self.hz = None
         if zorla:
             self.zorla = {}
             self.son_cikti = None
+        if hasattr(self, 'agac'):
+            self.agac.delete(*self.agac.get_children())
+            self.satir_yolu = {}
+            if not self.calisiyor:
+                self.durum.configure(text='Hazır.')
+
+    def _klasor_degisti(self):
+        # başka bir klasör için seçilmiş "önceki ayın raporu" yeni klasöre taşınmasın
+        if self.v_sablon.get() and self._sablon_klasoru != self.v_klasor.get():
+            self.v_sablon.set('')
+        self._sifirla()
+
+    def _sablon_degisti(self):
+        self._sablon_klasoru = self.v_klasor.get()
+        self._sifirla(zorla=False)
 
     def _yaz(self, s):
         self.metin.configure(state='normal')
@@ -200,7 +224,6 @@ class Uygulama(tk.Tk):
         p = filedialog.askdirectory(title='Firmanın bu ayki klasörü', initialdir=self.v_klasor.get() or None)
         if p:
             self.v_klasor.set(p)
-            self.v_sablon.set('')
 
     def _sec_sablon(self):
         p = filedialog.askopenfilename(title='Önceki ayın bitmiş raporu (şablon)', filetypes=[('Word', '*.doc *.docx')],
@@ -212,6 +235,16 @@ class Uygulama(tk.Tk):
         from .ayar import ayar_oku
         yol = self.v_ayar.get().strip()
         return ayar_oku(yol or None)
+
+    def _ayar_ya_da_hata(self):
+        try:
+            return True, self._ayar()
+        except Exception as e:  # noqa: BLE001 - .exe'de konsol yok: her hata pencerede gösterilmeli
+            messagebox.showerror('Ayar dosyası', str(e) or type(e).__name__)
+            return False, None
+
+    def _anlik(self):
+        return (self.v_klasor.get(), self.v_ayar.get(), self.v_sablon.get(), tuple(sorted((k, str(v)) for k, v in self.zorla.items())))
 
     def _kontrol(self):
         if self.calisiyor:
@@ -240,6 +273,7 @@ class Uygulama(tk.Tk):
         """is_() bir iş parçacığında çalışır (print'leri Çıktı sekmesine gider); sonucu ana iş parçacığında bitince(sonuc, hata)."""
         self._mesgul(True, f'{baslik}…')
         self._yaz(f'\n===== {baslik} =====\n')
+        anlik = self._anlik()
 
         def calis():
             yazici = _KuyrukYazici(self.q)
@@ -251,13 +285,20 @@ class Uygulama(tk.Tk):
                 hata = e
                 if not isinstance(e, (BelirsizSecim, ValueError, SystemExit)) and not type(e).__name__.endswith('Hatasi'):
                     self.q.put(traceback.format_exc())
-            self.after(150, self._bitir, baslik, bitince, sonuc, hata, tekrar)
+            self.after(150, self._bitir, baslik, bitince, sonuc, hata, tekrar, anlik)
 
         threading.Thread(target=calis, daemon=True).start()
 
-    def _bitir(self, baslik, bitince, sonuc, hata, tekrar=None):
+    def _bitir(self, baslik, bitince, sonuc, hata, tekrar=None, anlik=None):
         self._kuyrugu_bosalt_hemen()
         self._mesgul(False)
+        if anlik is not None and anlik[:3] != self._anlik()[:3]:
+            self.hz = None
+            self._yaz('\nİş sürerken alanlar değişti; sonuç kullanılmadı. Yeniden başlatın.\n')
+            self.durum.configure(text=f'{baslik}: alanlar değiştiği için sonuç kullanılmadı.')
+            return
+        if hata is not None:
+            self.hz = None
         if isinstance(hata, BelirsizSecim):
             self.durum.configure(text=f'{baslik}: seçim gerekiyor.')
             secilen = self._aday_sec(hata)
@@ -321,6 +362,10 @@ class Uygulama(tk.Tk):
                                    values=('RAPOR', 'Şablon: önceki ayın raporu', s.donem.onceki().tire,
                                            f'✔ şablon ({hz.sablon_kaynagi})', ''), tags=('kullanilan',))
             self.satir_yolu[iid] = Path(hz.sablon)
+        for d, konu, ac in hz.tum_notlar():
+            if d in ('HATA', 'UYARI'):
+                self.agac.insert('', 0 if d == 'HATA' else 'end', text=f'{"✘" if d == "HATA" else "⚠"} {d}: {konu}',
+                                 values=('', ac, '', '', ''), tags=('hata' if d == 'HATA' else 'uyari',))
         sira = {r: i for i, r in enumerate(list(KULLANIM))}
         for b in sorted(s.belgeler, key=lambda b: (b.rol == '', sira.get(b.rol, 99), b.tur in ('BILINMEYEN', 'TARANMIS', 'DESTEKLENMEYEN'),
                                                    b.tur, b.goreli)):
@@ -339,20 +384,31 @@ class Uygulama(tk.Tk):
         if str(self.agac.item(iid, 'text')).startswith('[önceki ay]'):
             messagebox.showinfo('Şablon', 'Şablonu değiştirmek için "Önceki ayın raporu" alanından başka bir dosya seçin.')
             return
+        if self.hz is None:
+            messagebox.showinfo('Belge türü', 'Önce "1) Belgeleri tanı"ya basın.')
+            return
+        ok, ayar = self._ayar_ya_da_hata()
+        if not ok:
+            return
+        duz = TurDuzeltmeleri(duzeltme_dosyasi(ayar))
+        klasor = self.hz.klasor
         pen = tk.Toplevel(self)
         pen.title('Belge türünü düzelt')
         pen.transient(self)
         pen.grab_set()
         ttk.Label(pen, text=f'{yol.name}\nBu dosya nedir?', padding=10).pack(anchor='w')
-        secenekler = [f'{t} — {ACIKLAMA.get(t, "")}' for t in TUR_LISTESI]
+        turler = [OTOMATIK] + TUR_LISTESI
+        secenekler = ['Otomatik — içeriğinden belirlensin (elle düzeltmeyi kaldır)'] + [f'{t} — {ACIKLAMA.get(t, "")}' for t in TUR_LISTESI]
         cb = ttk.Combobox(pen, values=secenekler, state='readonly', width=70)
-        mevcut = str(self.agac.set(iid, 'tur')).replace(' (elle)', '')
-        cb.current(TUR_LISTESI.index(mevcut) if mevcut in TUR_LISTESI else 0)
+        mevcut = str(self.agac.set(iid, 'tur'))
+        if mevcut.endswith(' (elle)'):
+            mevcut = mevcut.replace(' (elle)', '')
+        cb.current(turler.index(mevcut) if mevcut in turler else 0)
         cb.pack(padx=10)
         sonuc = {}
 
         def kaydet():
-            sonuc['tur'] = TUR_LISTESI[cb.current()]
+            sonuc['tur'] = turler[cb.current()]
             pen.destroy()
         cub = ttk.Frame(pen, padding=10)
         cub.pack(fill='x')
@@ -361,28 +417,41 @@ class Uygulama(tk.Tk):
         self.wait_window(pen)
         if 'tur' not in sonuc:
             return
+        anahtar = duz.anahtar(yol, klasor)
+        digerleri = [b.goreli for b in self.hz.secim.belgeler
+                     if not Path(b.yol) == Path(yol) and duz.anahtar(b.yol, klasor) == anahtar]
+        if digerleri and not messagebox.askyesno(
+                'Belge türü', 'Bu düzeltme adı aynı (ay/yıl dışında) olan şu dosyalara da uygulanacak:\n\n'
+                + '\n'.join(digerleri[:15]) + '\n\nDevam edilsin mi?'):
+            return
         try:
-            TurDuzeltmeleri(duzeltme_dosyasi(self._ayar())).ayarla(yol, sonuc['tur'])
+            if sonuc['tur'] == OTOMATIK:
+                duz.kaldir(yol, klasor)
+            else:
+                duz.ayarla(yol, sonuc['tur'], klasor)
         except Exception as e:  # noqa: BLE001
             messagebox.showerror('Belge türü', str(e))
             return
-        self._yaz(f'Tür düzeltildi: {yol.name} → {sonuc["tur"]} (kaydedildi: {duzeltme_dosyasi(self._ayar())})\n')
+        self._yaz(f'Tür düzeltildi: {yol.name} → {sonuc["tur"]} (kaydedildi: {duz.yol})\n')
+        # bu dosya için daha önce yapılmış elle seçimler geçersiz
+        self.zorla = {r: y for r, y in self.zorla.items() if Path(y) != Path(yol)}
         self.hz = None
         self.tani()
 
     # ---------------------------------------------------------------- işlemler
     def _hazirla_isi(self):
         ayar = self._ayar()
-        return lambda: (ayar, hazirla(self.v_klasor.get(), ayar, self.v_sablon.get() or None, dict(self.zorla),
-                                      ilerleme=lambda m: print(m)))
+        klasor, sablon, zorla = self.v_klasor.get(), self.v_sablon.get() or None, dict(self.zorla)
+        return lambda: (ayar, hazirla(klasor, ayar, sablon, zorla, ilerleme=lambda m: print(m)))
 
     def tani(self):
         if not self._kontrol():
             return
+        self.hz = None
         try:
             is_ = self._hazirla_isi()
-        except ValueError as e:
-            messagebox.showerror('Ayar dosyası', str(e))
+        except Exception as e:  # noqa: BLE001 - .exe'de konsol yok: her hata pencerede gösterilmeli
+            messagebox.showerror('Ayar dosyası', str(e) or type(e).__name__)
             return
         self._hatirla_kaydet()
         self._arka_planda('Belge tanıma', is_, self._tani_bitti, tekrar=self.tani)
@@ -396,30 +465,35 @@ class Uygulama(tk.Tk):
             if d in ('HATA', 'UYARI'):
                 self._yaz(f'[{d}] {konu}: {ac}\n')
         eksik = hz.secim.eksik_zorunlu()
+        uyari = sum(1 for d, _, _ in hz.tum_notlar() if d in ('HATA', 'UYARI'))
+        ek = f' {uyari} uyarı var — tablonun başında (sarı satırlar), inceleyin.' if uyari else ''
         if eksik or not hz.sablon:
             parca = [rol_adi(r) for r in eksik] + ([] if hz.sablon else ['Şablon (önceki ayın raporu)'])
-            self.durum.configure(text='Tanıma bitti — eksik: ' + ', '.join(parca))
+            self.durum.configure(text='Tanıma bitti — eksik: ' + ', '.join(parca) + '.' + ek)
         else:
-            self.durum.configure(text=f'Tanıma bitti — {hz.secim.donem.tire}: gerekli belgeler ve şablon bulundu. '
+            self.durum.configure(text=f'Tanıma bitti — {hz.secim.donem.tire}: gerekli belgeler ve şablon bulundu.{ek} '
                                       '"2) Taslak oluştur"a basabilirsiniz.')
 
     def taslak(self):
         if not self._kontrol():
             return
-        try:
-            ayar = self._ayar()
-        except ValueError as e:
-            messagebox.showerror('Ayar dosyası', str(e))
+        ok, ayar = self._ayar_ya_da_hata()
+        if not ok:
             return
+        if self.hz is not None:
+            ciddi = [ac for d, konu, ac in self.hz.tum_notlar()
+                     if d == 'UYARI' and konu in ('Ayar dosyası', 'Belge dönemi', 'Şablon')]
+            if ciddi and not messagebox.askyesno('Taslak', 'Tanımada şu uyarılar var:\n\n• ' + '\n• '.join(ciddi)
+                                                 + '\n\nYine de taslak oluşturulsun mu?'):
+                return
         self._hatirla_kaydet()
-        hz_hazir = self.hz
+        klasor, sablon, zorla = self.v_klasor.get(), self.v_sablon.get() or None, dict(self.zorla)
 
         def is_():
+            # klasördeki dosyalar son tanımadan sonra değişmiş olabilir: her seferinde yeniden tanınır (önbellek sayesinde hızlı)
             from .taslak import taslak_uret
-            hz = hz_hazir or hazirla(self.v_klasor.get(), ayar, self.v_sablon.get() or None, dict(self.zorla),
-                                     ilerleme=lambda m: print(m))
-            if hz_hazir is None:
-                print(hz.tablo())
+            hz = hazirla(klasor, ayar, sablon, zorla, ilerleme=lambda m: print(m))
+            print(hz.tablo())
             tc = taslak_uret(ayar, None, hz.klasor, hz=hz, ilerleme=lambda m: print(m))
             return hz, tc
         self._arka_planda('Taslak', is_, self._taslak_bitti, tekrar=self.taslak)

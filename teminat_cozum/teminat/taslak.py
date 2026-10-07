@@ -7,7 +7,7 @@ from .islem import hazirla
 from .kontroller import cikti
 from .okuyucular.girdiler import secimden_oku
 from .rapor.olustur import SablonHatasi, taslak_olustur
-from .tanima import EK_TURLER
+from .tanima import EK_TURLER, cikti_klasoru_hazirla
 
 CIKTI_KLASORU = 'CLAUDE TASLAK'
 
@@ -54,8 +54,7 @@ def taslak_uret(ayar, sablon, girdi, cikti_klasoru=None, kati=False, uzerine_yaz
         raise SablonHatasi(f'Önceki ayın ({hz.secim.donem.onceki().tire}) bitmiş raporu bulunamadı; şablon olarak kullanılacak '
                            'raporu "Önceki ayın raporu" alanından (komut satırında --sablon) seçin.')
     girdi = hz.klasor
-    cikti_klasoru = Path(cikti_klasoru) if cikti_klasoru else girdi / CIKTI_KLASORU
-    cikti_klasoru.mkdir(parents=True, exist_ok=True)
+    cikti_klasoru = cikti_klasoru_hazirla(Path(cikti_klasoru) if cikti_klasoru else girdi / CIKTI_KLASORU)
     g = secimden_oku(hz.secim)
     g.notlar += hz.notlar
     sablon_docx = docx_hazirla(hz.sablon, cikti_klasoru / '_cevrilen')

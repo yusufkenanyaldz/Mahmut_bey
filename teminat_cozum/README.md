@@ -141,8 +141,14 @@ karar verilemezse kullanıcıya sorulur. Klasör adı başka bir ayı gösteriyo
 uyarı verilir. Zorunlu bir belge bulunamazsa tanıma tablosunda **✘ EKSİK** olarak gösterilir.
 
 **Tür düzeltmeleri:** pencerede tanıma tablosundaki satıra çift tıklayıp türü değiştirirseniz (ya da "yok sayılsın"),
-bu seçim firma ayar dosyasının yanındaki `belge_turleri.yaml`'a yazılır ve sonraki aylarda da uygulanır (anahtar,
-dosya adından ay ve yıl çıkarılmış hali: "liste ŞUBAT 2026.xls" ile "liste MART 2026.xls" aynı sayılır).
+bu seçim firma ayar dosyasının yanındaki `belge_turleri.yaml`'a yazılır ve sonraki aylarda da uygulanır. Anahtar, dosyanın
+ayın klasörüne göre göreli yolundan ay adları ve yıllar çıkarılmış halidir: "liste ŞUBAT 2026.xls" ile "liste MART 2026.xls"
+aynı sayılır; "KDV 1.pdf" ile "KDV 2.pdf" ya da "liste.xls" ile "SİSTEM\liste.xls" farklıdır. Düzeltme başka dosyaları da
+etkileyecekse önce sorulur; "Otomatik" seçilirse düzeltme kaldırılır. Ayar dosyası seçilmeden düzeltme kaydedilmez
+(düzeltmeler firmaya özeldir).
+
+Programın çıktı klasörleri (`CLAUDE TASLAK` ya da `--cikti` ile verilen klasör) bir işaret dosyası taşır ve hiçbir aramada
+girdi ya da şablon sayılmaz.
 
 Okunan dosyaların türü ve dönemi (metin değil) hız için kullanıcı klasöründe `.teminat_cozum\tanima_onbellek.json`
 dosyasında saklanır; dosya değişince yeniden okunur.

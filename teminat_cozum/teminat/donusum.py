@@ -1,4 +1,5 @@
 """.doc → .docx dönüşümü (LibreOffice). Orijinal dosyaya dokunulmaz; çıktı ayrı klasöre yazılır."""
+import hashlib
 import os
 import shutil
 import subprocess
@@ -24,7 +25,8 @@ def soffice_yolu():
 def docx_hazirla(path, onbellek):
     """.docx ise yolu aynen döndürür; .doc ise `onbellek` klasörüne .docx'e çevirip yeni yolu döndürür.
 
-    Kaynaktan daha yeni bir dönüşüm zaten varsa yeniden çevrilmez.
+    Dönüşümün adı kaynağın tam yolundan, boyutundan ve değişme zamanından türetilir: farklı klasörlerdeki aynı adlı
+    raporlar (ör. iki ayın "RAPOR.doc"su) birbirinin yerine kullanılmaz; kaynak değişince yeniden çevrilir.
     """
     path = Path(path)
     if path.suffix.lower() == '.docx':
@@ -33,21 +35,25 @@ def docx_hazirla(path, onbellek):
         raise DonusumHatasi(f'Word dosyası değil: {path}')
     onbellek = Path(onbellek)
     onbellek.mkdir(parents=True, exist_ok=True)
-    hedef = onbellek / (path.stem + '.docx')
-    if hedef.exists() and hedef.stat().st_mtime >= path.stat().st_mtime:
+    st = path.stat()
+    imza = hashlib.sha1(f'{path.resolve()}|{st.st_size}|{st.st_mtime_ns}'.encode('utf-8')).hexdigest()[:10]
+    hedef = onbellek / f'{path.stem}_{imza}.docx'
+    if hedef.exists():
         return hedef
     so = soffice_yolu()
     if not so:
         raise DonusumHatasi('LibreOffice (soffice) bulunamadı; .doc dosyasını Word ile .docx olarak kaydedin '
                             'ya da SOFFICE ortam değişkenine soffice.exe yolunu yazın.')
     # Açık bir LibreOffice penceresi dönüşümü sessizce engellemesin diye ayrı profil kullanılır.
-    with tempfile.TemporaryDirectory() as profil:
+    with tempfile.TemporaryDirectory() as profil, tempfile.TemporaryDirectory() as cikis:
         komut = [so, f'-env:UserInstallation={Path(profil).as_uri()}', '--headless',
-                 '--convert-to', 'docx', '--outdir', str(onbellek), str(path)]
+                 '--convert-to', 'docx', '--outdir', cikis, str(path)]
         try:
             subprocess.run(komut, check=True, capture_output=True, timeout=180)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             raise DonusumHatasi(f'Dönüştürülemedi: {path.name} ({e})') from e
-    if not hedef.exists():
-        raise DonusumHatasi(f'Dönüştürülemedi: {path.name} (LibreOffice çıktı üretmedi)')
+        uretilen = list(Path(cikis).glob('*.docx'))
+        if not uretilen:
+            raise DonusumHatasi(f'Dönüştürülemedi: {path.name} (LibreOffice çıktı üretmedi)')
+        shutil.move(str(uretilen[0]), str(hedef))
     return hedef

@@ -20,10 +20,11 @@ def yol_temizle(yol):
 
 
 def duzeltme_dosyasi(ayar=None):
-    """Elle tür düzeltmelerinin saklandığı dosya: firma ayar dosyasının yanında (yoksa kullanıcı klasöründe)."""
+    """Elle tür düzeltmelerinin saklandığı dosya: firma ayar dosyasının yanında. Ayar dosyası yoksa None (düzeltmeler
+    firmaya özeldir; bütün firmalarda geçerli ortak bir dosya kullanılmaz)."""
     if ayar is not None and getattr(ayar, '_yol', None):
         return Path(ayar._yol).parent / 'belge_turleri.yaml'
-    return Path.home() / '.teminat_cozum' / 'belge_turleri.yaml'
+    return None
 
 
 @dataclass
@@ -54,8 +55,10 @@ def hazirla(klasor, ayar=None, sablon=None, zorla=None, istenen=None, ilerleme=N
     if ilerleme:
         ilerleme('Belgeler içerikten tanınıyor…')
     belgeler = tani(klasor, duz, ob, ilerleme)
-    secim = secim_yap(klasor, belgeler, istenen, zorla)
+    secim = secim_yap(klasor, belgeler, istenen, zorla, ob)
     notlar = []
+    if duz.bozuk:
+        notlar.append(('UYARI', 'Tür düzeltmeleri', duz.bozuk))
     metin = secim.k.get('_text') or ''
     if ayar is not None and ayar.vkn and metindeki_vknler(metin) and not vkn_metinde(ayar.vkn, metin):
         notlar.append(('UYARI', 'Ayar dosyası', f'Seçilen ayar dosyasındaki VKN ({ayar.vkn}) bu beyannamede geçmiyor — '
@@ -76,7 +79,9 @@ def hazirla(klasor, ayar=None, sablon=None, zorla=None, istenen=None, ilerleme=N
     else:
         if ilerleme:
             ilerleme(f'Önceki ayın ({onceki.tire}) raporu aranıyor…')
-        sablon, n = sablon_bul(klasor, onceki, metin, ob, ilerleme=ilerleme)
+        haric = [b.yol for b in secim.belgeler if b.elle and b.tur != 'RAPOR']
+        elle_rapor = [b.yol for b in secim.belgeler if b.elle and b.tur == 'RAPOR']
+        sablon, n = sablon_bul(klasor, onceki, metin, ob, ilerleme=ilerleme, haric=haric, elle_rapor=elle_rapor)
         notlar += n
         kaynak = 'içerikten' if sablon else ''
     return Hazirlik(klasor, secim, sablon, kaynak, notlar)

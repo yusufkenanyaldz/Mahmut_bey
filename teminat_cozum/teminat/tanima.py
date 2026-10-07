@@ -83,6 +83,7 @@ OKUNAN = {'.pdf', '.xls', '.xlsx', '.xlsm', '.docx', '.doc'}
 ATLANAN_DOSYALAR = {'thumbs.db', 'desktop.ini', '.ds_store'}
 ATLANAN_KLASORLER = {'CLAUDE TASLAK', 'CLAUDE OUTPUTS', '_CEVRILEN', 'GERIYE DONUK TEST', '__MACOSX'}
 COK_DOSYA = 3000           # bir "ay klasörü" için makul üst sınır
+CIKTI_ISARETI = '.teminat_cikti'   # programın çıktı klasörlerine konur; bu klasörler hiçbir aramada girdi sayılmaz
 
 
 class BelirsizSecim(Exception):
@@ -103,14 +104,53 @@ def nf(s):
 
 def atlanir(ad):
     a = ad.lower()
-    return ad.startswith(('~', '._', '.~lock')) or a in ATLANAN_DOSYALAR or a.endswith('.tmp')
+    return ad.startswith(('~', '._', '.~lock')) or a in ATLANAN_DOSYALAR or a.endswith('.tmp') or a == CIKTI_ISARETI
+
+
+def atlanan_klasor(ad):
+    return katla(ad).upper() in ATLANAN_KLASORLER or ad.startswith('.')
+
+
+def cikti_klasoru_mu(d):
+    """Programın kendi çıktı klasörü mü (adı ne olursa olsun; --cikti ile başka ad verilmiş olabilir)."""
+    return (Path(d) / CIKTI_ISARETI).exists()
+
+
+def cikti_klasoru_hazirla(d):
+    """Çıktı klasörünü oluşturur ve işaretler: içindeki taslaklar sonraki taramalarda girdi ya da şablon sanılmaz."""
+    d = Path(d)
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        (d / CIKTI_ISARETI).touch(exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def icerik_ozeti(p):
+    """Dosyanın içerik özeti (aynı boyutlu ama farklı içerikli dosyaları ayırmak için)."""
+    h = hashlib.sha1()
+    with open(p, 'rb') as f:
+        for parca in iter(lambda: f.read(1 << 20), b''):
+            h.update(parca)
+    return h.hexdigest()
+
+
+def ayni_dosya(a, b):
+    try:
+        return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+    except OSError:
+        return False
 
 
 def dosyalari_listele(klasor, en_cok=COK_DOSYA):
     klasor = Path(klasor)
     out = []
     for kok, dirs, files in os.walk(klasor):
-        dirs[:] = sorted(d for d in dirs if katla(d).upper() not in ATLANAN_KLASORLER and not d.startswith('.'))
+        if cikti_klasoru_mu(kok):
+            dirs[:] = []
+            continue
+        dirs[:] = sorted(d for d in dirs if not atlanan_klasor(d))
         for f in sorted(files):
             if not atlanir(f):
                 out.append(Path(kok) / f)
@@ -195,34 +235,44 @@ def _pdf_metni(p):
     return kdv1.pdf_ilk_sayfa(p)[:ILK]
 
 
-def doc_metinleri(yollar, zaman_asimi=600):
-    """Eski .doc dosyalarını tek LibreOffice çağrısıyla metne çevirir: {yol: metin}."""
+def doc_metinleri(yollar, zaman_asimi=600, parti_boyu=60):
+    """Eski .doc dosyalarını toplu LibreOffice çağrılarıyla metne çevirir: {yol: metin}.
+
+    Her dosya geçici klasöre sıra numarasıyla kopyalanıp öyle çevrilir: farklı klasörlerdeki aynı adlı (ya da yalnızca
+    büyük/küçük harfi farklı) dosyaların çıktıları birbirinin üzerine yazılmaz. Orijinallere dokunulmaz.
+    """
+    import shutil
+
     from .donusum import soffice_yolu
     so = soffice_yolu()
     out = {}
+    yollar = list(yollar)
     if not so or not yollar:
         return out
-    kalan = list(yollar)
-    while kalan:
-        parti, kokler, sonraki = [], set(), []
-        for p in kalan:                            # aynı adlı dosyalar ayrı partilerde (çıktılar çakışmasın)
-            if p.stem in kokler or len(parti) >= 60:
-                sonraki.append(p)
-            else:
-                parti.append(p)
-                kokler.add(p.stem)
-        with tempfile.TemporaryDirectory() as hedef, tempfile.TemporaryDirectory() as profil:
+    for bas in range(0, len(yollar), parti_boyu):
+        parti = yollar[bas:bas + parti_boyu]
+        with tempfile.TemporaryDirectory() as kaynak, tempfile.TemporaryDirectory() as hedef, \
+                tempfile.TemporaryDirectory() as profil:
+            kopyalar = []
+            for i, p in enumerate(parti):
+                k = Path(kaynak) / f'{i}.doc'
+                try:
+                    shutil.copyfile(p, k)
+                except OSError:
+                    continue
+                kopyalar.append((p, k))
+            if not kopyalar:
+                continue
             komut = [so, f'-env:UserInstallation={Path(profil).as_uri()}', '--headless', '--convert-to',
-                     'txt:Text (encoded):UTF8', '--outdir', hedef, *map(str, parti)]
+                     'txt:Text (encoded):UTF8', '--outdir', hedef, *(str(k) for _, k in kopyalar)]
             try:
                 subprocess.run(komut, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=zaman_asimi)
             except (subprocess.TimeoutExpired, OSError):
                 pass
-            for p in parti:
-                t = Path(hedef) / (p.stem + '.txt')
+            for p, k in kopyalar:
+                t = Path(hedef) / (k.stem + '.txt')
                 if t.exists():
                     out[p] = t.read_text(encoding='utf-8', errors='ignore')[:ILK]
-        kalan = sonraki
     return out
 
 
@@ -237,41 +287,88 @@ def siniflandir(metin):
 
 
 # ---------------------------------------------------------------- elle tür düzeltmeleri
+_YIL_AY = [r'(?<!\d)(?:19|20)\d\d[-_. ]?(?:0[1-9]|1[0-2])(?!\d)',      # 202602, 2026-02
+           r'(?<!\d)(?:0[1-9]|1[0-2])[-_. ]?(?:19|20)\d\d(?!\d)',      # 02.2026, 02-2026
+           r'(?<!\d)(?:19|20)\d\d(?!\d)']                               # 2026
+
+
 def ad_anahtari(ad):
-    """Dosya adından ay/yıl/sayılar çıkarılmış anahtar: '01 FİRMA ... ŞUBAT 2026.xls' ile '... MART 2026.xls' aynı."""
-    n = katla(nf(ad)).upper()
-    for a in AYLAR:
-        n = re.sub(rf'(?<![A-Z]){katla(a).upper()}(?![A-Z])', ' ', n)
-    n = re.sub(r'\d+', ' ', n)
-    return ' '.join(n.split())
+    """Bir dosya adının (ya da göreli yolun) aydan bağımsız anahtarı: ay adları ve yıllar çıkarılır, diğer sayılar kalır.
+
+    'liste ŞUBAT 2026.xls' ile 'liste Mart 2027.xls' aynı; 'KDV 1.pdf' ile 'KDV 2.pdf', 'liste.xls' ile 'SİSTEM/liste.xls' farklı.
+    """
+    parcalar = []
+    for parca in str(ad).replace('\\', '/').split('/'):
+        n = katla(nf(parca)).upper()
+        for d in _YIL_AY:
+            n = re.sub(d, ' ', n)
+        for a in AYLAR:
+            n = re.sub(rf'(?<![A-Z]){katla(a).upper()}(?![A-Z])', ' ', n)
+        n = ' '.join(n.split())
+        if n:
+            parcalar.append(n)
+    return '/'.join(parcalar)
 
 
 class TurDuzeltmeleri:
-    """Kullanıcının elle verdiği türler: {ad anahtarı: TÜR}. Firma ayar dosyasının yanındaki belge_turleri.yaml."""
+    """Kullanıcının elle verdiği türler: {ay klasörüne göre göreli yolun anahtarı: TÜR}.
+
+    Firma ayar dosyasının yanındaki belge_turleri.yaml'da saklanır (firmaya özel; ortak bir dosya kullanılmaz).
+    """
 
     def __init__(self, yol=None):
         self.yol = Path(yol) if yol else None
         self.veri = {}
+        self.bozuk = None
         if self.yol and self.yol.exists():
             import yaml
             try:
-                self.veri = {str(k): str(v) for k, v in (yaml.safe_load(self.yol.read_text(encoding='utf-8')) or {}).items()}
-            except Exception:  # noqa: BLE001 - bozuk dosya: düzeltmesiz devam
+                okunan = yaml.safe_load(self.yol.read_text(encoding='utf-8')) or {}
+                if not isinstance(okunan, dict):
+                    raise ValueError('sözlük değil')
+                self.veri = {str(k): str(v) for k, v in okunan.items()}
+            except Exception as e:  # noqa: BLE001 - bozuk dosya: düzeltmesiz devam, ama üzerine yazılmaz
                 self.veri = {}
+                self.bozuk = f'{self.yol} okunamadı ({type(e).__name__}); elle tür düzeltmeleri uygulanmadı. Dosyayı düzeltin.'
 
-    def tur(self, p):
-        return self.veri.get(ad_anahtari(Path(p).name))
+    @staticmethod
+    def anahtar(p, kok=None):
+        p = Path(p)
+        try:
+            rel = p.relative_to(kok).as_posix() if kok else p.name
+        except ValueError:
+            rel = p.name
+        return ad_anahtari(rel)
 
-    def ayarla(self, p, tur):
+    def tur(self, p, kok=None):
+        return self.veri.get(self.anahtar(p, kok))
+
+    def _yaz(self):
+        if self.bozuk:
+            raise ValueError(self.bozuk)
+        if not self.yol:
+            raise ValueError('Tür düzeltmesini kaydetmek için önce firmanın ayar dosyasını seçin '
+                             '(düzeltmeler o firmaya özel olarak ayar dosyasının yanında saklanır).')
+        import yaml
+        self.yol.parent.mkdir(parents=True, exist_ok=True)
+        bas = ('# Belge türü düzeltmeleri (programın pencereden kaydettiği). Anahtar: ayın klasörüne göre göreli yol; ay adları\n'
+               '# ve yıllar çıkarılmıştır, böylece sonraki aylarda da geçerli olur. Tür adları: ' + ', '.join(TUR_LISTESI) + '\n')
+        gecici = self.yol.with_name(self.yol.name + '.yeni')
+        gecici.write_text(bas + yaml.safe_dump(self.veri, allow_unicode=True, sort_keys=True), encoding='utf-8')
+        os.replace(gecici, self.yol)
+
+    def ayarla(self, p, tur, kok=None):
         if tur not in TUR_LISTESI:
             raise ValueError(f'Bilinmeyen tür: {tur}')
-        self.veri[ad_anahtari(Path(p).name)] = tur
-        if self.yol:
-            import yaml
-            self.yol.parent.mkdir(parents=True, exist_ok=True)
-            bas = ('# Belge türü düzeltmeleri (programın pencereden kaydettiği). Anahtar: dosya adından ay, yıl ve sayılar\n'
-                   '# çıkarılmış hali; böylece sonraki aylarda da geçerli olur. Tür adları: ' + ', '.join(TUR_LISTESI) + '\n')
-            self.yol.write_text(bas + yaml.safe_dump(self.veri, allow_unicode=True, sort_keys=True), encoding='utf-8')
+        if self.bozuk:
+            raise ValueError(self.bozuk)
+        self.veri[self.anahtar(p, kok)] = tur
+        self._yaz()
+
+    def kaldir(self, p, kok=None):
+        """Elle düzeltmeyi kaldırır (tür yeniden içerikten belirlenir)."""
+        if self.veri.pop(self.anahtar(p, kok), None) is not None:
+            self._yaz()
 
 
 # ---------------------------------------------------------------- tanıma
@@ -302,7 +399,7 @@ def tani(klasor, duzeltmeler=None, onbellek=None, ilerleme=None):
             ilerleme(f'{i}/{len(yollar)} dosya okunuyor…')
         b = Belge(p, nf(p.relative_to(klasor).as_posix()), 'BILINMEYEN')
         belgeler.append(b)
-        elle = duzeltmeler.tur(p)
+        elle = duzeltmeler.tur(p, klasor)
         if elle:
             b.tur, b.elle = elle, True
             continue
@@ -350,14 +447,18 @@ _AY_RX = '|'.join(katla(a).upper() for a in AYLAR)
 
 
 def metindeki_donemler(metin):
-    """Metinde geçen 'ŞUBAT/2026', 'Şubat 2026', '2026/Şubat', '02/2026' dönemleri (Counter)."""
+    """Metinde geçen 'ŞUBAT/2026', 'Şubat 2026', '2026/Şubat', '02/2026' dönemleri (Counter).
+
+    Tarihler dönem sayılmaz: '16/02/2026' ve '20 Şubat 2026' (önceki ayın dilekçesi sonraki ay verilmiş olabilir)."""
     n = katla(metin).upper()
     c = collections.Counter()
-    for a, y in re.findall(rf'(?<![A-Z])({_AY_RX})\s*[-/., ]\s*(20\d\d)(?!\d)', n):
+    for a, y in re.findall(rf'(?<![A-Z])(?<!\d )(?<!\d\.)(?<!\d)({_AY_RX})\s*[-/., ]\s*(20\d\d)(?!\d)', n):
         c[Donem(int(y), [katla(x).upper() for x in AYLAR].index(a) + 1)] += 1
     for y, a in re.findall(rf'(?<!\d)(20\d\d)\s*[-/., ]\s*({_AY_RX})(?![A-Z])', n):
         c[Donem(int(y), [katla(x).upper() for x in AYLAR].index(a) + 1)] += 1
-    for a, y in re.findall(r'(?<![\d.])(0?[1-9]|1[0-2])\s*/\s*(20\d\d)(?!\d)', n):
+    for a, y in re.findall(r'(?<![\d./-])(0?[1-9]|1[0-2])\s*/\s*(20\d\d)(?!\d)', n):
+        c[Donem(int(y), int(a))] += 1
+    for y, a in re.findall(r'(?<![\d./-])(20\d\d)\s*/\s*(0?[1-9]|1[0-2])(?![\d./])', n):
         c[Donem(int(y), int(a))] += 1
     return c
 
@@ -428,13 +529,34 @@ def _goreli(b):
     return b.goreli
 
 
-def kdv1_sec(belgeler, istenen=None, klasor_ayi=None, zorla=None):
+def _imza(veri):
+    """Okunan satırların özeti: aynı puanlı iki aday gerçekten aynı içerikte mi?"""
+    return hashlib.sha1(json.dumps(veri, sort_keys=True, default=str, ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def _zorla_belgesi(s, tur, yol):
+    """Kullanıcının elle seçtiği dosya: tanıma listesindeki kaydı (türü farklıysa düzeltilerek) ya da yeni kayıt."""
+    yol = Path(yol)
+    for b in s.belgeler:
+        if ayni_dosya(b.yol, yol):
+            if b.tur != tur:
+                b.tur, b.elle = tur, True
+            return b
+    b = Belge(yol, str(yol), tur, elle=True)
+    s.belgeler.append(b)
+    return b
+
+
+def _en_iyiler(puan, anahtar):
+    """En yüksek puanlı adaylar ve içerik imzaları farklı mı: (en iyiler, farklı_mı)."""
+    ust = [x for x in puan if anahtar(x) == anahtar(puan[0])]
+    return ust, len({x[-1] for x in ust}) > 1
+
+
+def kdv1_sec(adaylar, istenen=None, klasor_ayi=None):
     """Okunabilen 1 No.lu beyannameler arasından seçer: (Belge, k, notlar)."""
     from .okuyucular.kdv1 import kdv1_donem, kdv1_metinden, pdf_metni
     notlar = []
-    adaylar = [b for b in _adaylar(belgeler, 'KDV1') if zorla is None or b.yol == Path(zorla)]
-    if zorla is not None and not adaylar:
-        adaylar = [Belge(Path(zorla), Path(zorla).name, 'KDV1', elle=True)]
     okunan = []
     for b in adaylar:
         try:
@@ -453,7 +575,8 @@ def kdv1_sec(belgeler, istenen=None, klasor_ayi=None, zorla=None):
             raise TanimaHatasi('1 No.lu KDV beyannamesi olarak tanınan dosyalar okunamadı: '
                                + ', '.join(_goreli(b) for b in adaylar) + '. Beyanname PDF\'i metin içermeli (taranmış olmamalı).')
         raise TanimaHatasi('Klasörde 1 No.lu KDV beyannamesi bulunamadı (hiçbir PDF\'te "KATMA DEĞER VERGİSİ BEYANNAMESİ … '
-                           'Gerçek Usulde" yazısı yok). Beyannameyi klasöre koyun ya da tanıma tablosunda türünü düzeltin.')
+                           'Gerçek Usulde" yazısı yok ya da beyanname elle başka türe çevrilmiş). Beyannameyi klasöre koyun '
+                           'ya da tanıma tablosunda türünü düzeltin.')
     if istenen:
         uyan = [x for x in okunan if x[0].donem == istenen]
         if not uyan:
@@ -481,10 +604,8 @@ def kdv1_sec(belgeler, istenen=None, klasor_ayi=None, zorla=None):
     return okunan[0][0], okunan[0][1], notlar
 
 
-def _liste_sec(adaylar, donem, base, notlar, zorla=None):
+def _liste_sec(adaylar, donem, base, notlar, elle=False):
     from .okuyucular.listeler import donem_degeri, indirilecek_oku
-    if zorla:
-        adaylar = [b for b in adaylar if b.yol == Path(zorla)] or [Belge(Path(zorla), Path(zorla).name, 'LISTE_INDIRILECEK', True)]
     puan = []
     for b in adaylar:
         try:
@@ -502,25 +623,25 @@ def _liste_sec(adaylar, donem, base, notlar, zorla=None):
             b.donem = Donem(*en_cok)
         top = sum(r['kdv'] for r in rows)
         b.notu = f'{len(rows)} satır, toplam {tr(top)}'
-        puan.append(((round(uygun, 3), -round(abs(top - base), 2)), b, top))
+        puan.append(((round(uygun, 3), -round(abs(top - base), 2)), b, top, _imza(rows)))
     if not puan:
         return None
     puan.sort(key=lambda x: x[0], reverse=True)
-    if len(puan) > 1:
-        if puan[0][0] == puan[1][0] and abs(puan[0][2] - puan[1][2]) > 0.01:
-            raise BelirsizSecim('LISTE_INDIRILECEK', [x[1].yol for x in puan if x[0] == puan[0][0]],
-                                'Birden fazla indirilecek KDV listesi var ve dönem/toplam ile ayırt edilemedi. Hangisi bu aya ait?')
-        notlar.append(('BİLGİ', 'Belge seçimi', f'{len(puan)} indirilecek KDV listesinden dönem sütunu {donem.tire} olan ve toplamı '
-                       f'beyana en yakın olan seçildi: {_goreli(puan[0][1])}. Diğerleri: '
+    if len(puan) > 1 and not elle:
+        ust, farkli = _en_iyiler(puan, lambda x: x[0])
+        if farkli:
+            raise BelirsizSecim('LISTE_INDIRILECEK', [x[1].yol for x in ust],
+                                'Birden fazla indirilecek KDV listesi var; dönem sütunu ve toplamları aynı ama içerikleri farklı. '
+                                'Hangisi bu aya ait?')
+        neden = 'aynı içerikli kopyalardan ilki' if len(ust) > 1 else f'dönem sütunu {donem.tire} olan ve toplamı beyana en yakın olan'
+        notlar.append(('BİLGİ', 'Belge seçimi', f'{len(puan)} indirilecek KDV listesinden {neden} seçildi: {_goreli(puan[0][1])}. Diğerleri: '
                        + ', '.join(f'{_goreli(x[1])} ({x[1].donem.tire if x[1].donem else "dönem ?"}, {tr(x[2])})' for x in puan[1:])))
     return puan[0][1]
 
 
-def _takip_sec(adaylar, liste_satirlari, notlar, zorla=None):
+def _takip_sec(adaylar, liste_satirlari, notlar, elle=False):
     from .okuyucular.listeler import takip_oku
     from .rapor.safha import firma_anahtari
-    if zorla:
-        adaylar = [b for b in adaylar if b.yol == Path(zorla)] or [Belge(Path(zorla), Path(zorla).name, 'TAKIP', True)]
     by = collections.defaultdict(float)
     for r in liste_satirlari:
         by[firma_anahtari(r['satici'])] += r['kdv']
@@ -537,15 +658,18 @@ def _takip_sec(adaylar, liste_satirlari, notlar, zorla=None):
             continue
         uyan = sum(1 for x in t if round(x['kdv'], 2) in tutarlar or abs(by.get(firma_anahtari(x['firma']), -1) - x['kdv']) < 0.01)
         b.notu = f'{len(t)} firma, {uyan} tanesi indirilecek listeyle tutuyor'
-        puan.append((uyan / len(t), b, sum(x['kdv'] for x in t)))
+        puan.append((round(uyan / len(t), 4), b, sum(x['kdv'] for x in t), _imza(t)))
     if not puan:
         return None
     puan.sort(key=lambda x: x[0], reverse=True)
-    if len(puan) > 1:
-        if puan[0][0] == puan[1][0] and abs(puan[0][2] - puan[1][2]) > 0.01:
-            raise BelirsizSecim('TAKIP', [x[1].yol for x in puan if x[0] == puan[0][0]],
-                                'Birden fazla karşıt inceleme takip listesi var ve indirilecek listeyle eşit derecede tutuyor. Hangisi bu aya ait?')
-        notlar.append(('BİLGİ', 'Belge seçimi', f'{len(puan)} takip listesinden indirilecek listeyle en çok tutan seçildi: {_goreli(puan[0][1])}.'))
+    if len(puan) > 1 and not elle:
+        ust, farkli = _en_iyiler(puan, lambda x: x[0])
+        if farkli:
+            raise BelirsizSecim('TAKIP', [x[1].yol for x in ust],
+                                'Birden fazla karşıt inceleme takip listesi var; indirilecek listeyle eşit derecede tutuyorlar ama '
+                                'içerikleri farklı (ör. YMM / açıklama sütunu). Hangisi bu aya ait?')
+        neden = 'aynı içerikli kopyalardan ilki' if len(ust) > 1 else 'indirilecek listeyle en çok tutan'
+        notlar.append(('BİLGİ', 'Belge seçimi', f'{len(puan)} takip listesinden {neden} seçildi: {_goreli(puan[0][1])}.'))
     return puan[0][1]
 
 
@@ -555,10 +679,8 @@ def dilekce_metni(p):
         return _docx_metni(docx_hazirla(p, tmp), en_cok=None)
 
 
-def _dilekce_sec(adaylar, donem, notlar, zorla=None):
+def _dilekce_sec(adaylar, donem, notlar, elle=False):
     from .okuyucular.teminat import dilekce_metinden
-    if zorla:
-        adaylar = [b for b in adaylar if b.yol == Path(zorla)] or [Belge(Path(zorla), Path(zorla).name, 'TEMINAT_DILEKCE', True)]
     puan = []
     for b in adaylar:
         try:
@@ -570,25 +692,30 @@ def _dilekce_sec(adaylar, donem, notlar, zorla=None):
         donemler = metindeki_donemler(metin)
         if donemler:
             b.donem = donemler.most_common(1)[0][0]
-        p = (2 if donem in donemler else 0) + (1 if tem.get('tarih') else 0) + (1 if tem.get('toplam') else 0)
-        puan.append((p, b, tem.get('toplam')))
+        eslesti = donem in donemler
+        p = (2 if eslesti else 0) + (1 if tem.get('tarih') else 0) + (1 if tem.get('toplam') else 0)
+        puan.append((p, b, eslesti, _imza(metin)))
     if not puan:
         return None
     puan.sort(key=lambda x: x[0], reverse=True)
-    if len(puan) > 1:
-        if puan[0][0] == puan[1][0] and puan[0][2] != puan[1][2]:
-            raise BelirsizSecim('TEMINAT_DILEKCE', [x[1].yol for x in puan if x[0] == puan[0][0]],
-                                'Birden fazla teminat dilekçesi var ve içeriğinden hangisinin bu aya ait olduğu anlaşılamadı.')
-        notlar.append(('BİLGİ', 'Belge seçimi', f'{len(puan)} teminat dilekçesinden {donem.tire} dönemini anan seçildi: {_goreli(puan[0][1])}.'))
-    if puan[0][0] < 2 and puan[0][1].donem and puan[0][1].donem != donem:
-        notlar.append(('UYARI', 'Belge dönemi', f'Teminat dilekçesi {puan[0][1].donem.tire} dönemini anıyor, beyanname {donem.tire}: {_goreli(puan[0][1])}'))
-    return puan[0][1]
+    secilen, eslesti = puan[0][1], puan[0][2]
+    if len(puan) > 1 and not elle:
+        ust, farkli = _en_iyiler(puan, lambda x: x[0])
+        if farkli or not eslesti:
+            raise BelirsizSecim('TEMINAT_DILEKCE', [x[1].yol for x in (ust if farkli else puan)],
+                                f'Birden fazla teminat dilekçesi var ve içeriğinden hangisinin {donem.tire} dönemine ait olduğu '
+                                'anlaşılamadı. Hangisi kullanılsın?')
+        neden = 'aynı içerikli kopyalardan ilki' if len(ust) > 1 else f'{donem.tire} dönemini anan'
+        notlar.append(('BİLGİ', 'Belge seçimi', f'{len(puan)} teminat dilekçesinden {neden} seçildi: {_goreli(secilen)}.'))
+    if not eslesti:
+        anilan = f'{secilen.donem.tire} dönemini anıyor' if secilen.donem else 'hiçbir dönemi anmıyor'
+        notlar.append(('UYARI', 'Belge dönemi', f'Teminat dilekçesi {anilan}, beyanname {donem.tire}: {_goreli(secilen)} — '
+                       'önceki ayın dilekçesi olabilir; mektup tarihi/numarası ve tutarları kontrol edin.'))
+    return secilen
 
 
-def _yuklenilen_sec(adaylar, hedef, notlar, zorla=None):
+def _yuklenilen_sec(adaylar, hedef, notlar, elle=False):
     from .okuyucular.listeler import yuklenilen_oku
-    if zorla:
-        adaylar = [b for b in adaylar if b.yol == Path(zorla)] or [Belge(Path(zorla), Path(zorla).name, 'LISTE_YUKLENILEN', True)]
     puan = []
     for b in adaylar:
         try:
@@ -601,58 +728,105 @@ def _yuklenilen_sec(adaylar, hedef, notlar, zorla=None):
             continue
         top = sum(x['kdv'] for x in y)
         b.notu = f'{len(y)} satır, toplam {tr(top)}'
-        puan.append((abs(top - hedef), b, top))
+        puan.append((round(abs(top - hedef), 2), b, top, _imza(y)))
     if not puan:
         return None
     puan.sort(key=lambda x: x[0])
-    if puan[0][0] > 0.01 and not zorla:
-        notlar.append(('UYARI', 'Belge seçimi', f'Hiçbir yüklenilen tutanak dosyasının toplamı beyandaki 301 (+339) yüklenilen KDV\'ye '
-                       f'({tr(hedef)}) eşit değil; en yakını seçildi: {_goreli(puan[0][1])} ({tr(puan[0][2])}).'))
-    elif len(puan) > 1:
-        notlar.append(('BİLGİ', 'Belge seçimi', f'{len(puan)} yüklenilen listesinden toplamı beyana eşit olan seçildi: {_goreli(puan[0][1])}.'))
+    if elle:
+        return puan[0][1]
+    tutan = [x for x in puan if x[0] <= 0.01]
+    if tutan:
+        if len({x[-1] for x in tutan}) > 1:
+            raise BelirsizSecim('LISTE_YUKLENILEN', [x[1].yol for x in tutan],
+                                'Toplamı beyandaki 301 (+339) yüklenilen KDV\'ye eşit birden fazla, içeriği farklı yüklenilen '
+                                'listesi var. Hangisi kullanılsın?')
+        if len(puan) > 1:
+            notlar.append(('BİLGİ', 'Belge seçimi', f'{len(puan)} yüklenilen listesinden toplamı beyana eşit olan seçildi: '
+                           f'{_goreli(tutan[0][1])}.'))
+        return tutan[0][1]
+    if len(puan) > 1:
+        raise BelirsizSecim('LISTE_YUKLENILEN', [x[1].yol for x in puan],
+                            f'Hiçbir yüklenilen listesinin toplamı beyandaki 301 (+339) yüklenilen KDV\'ye ({tr(hedef)}) eşit değil. '
+                            'Hangisi kullanılsın?')
+    notlar.append(('UYARI', 'Belge seçimi', f'Yüklenilen tutanak dosyasının toplamı ({tr(puan[0][2])}) beyandaki 301 (+339) '
+                   f'yüklenilen KDV\'ye ({tr(hedef)}) eşit değil: {_goreli(puan[0][1])}.'))
     return puan[0][1]
 
 
-def secim_yap(klasor, belgeler, istenen=None, zorla=None):
+def bu_ayin_raporu_sec(s, onbellek=None):
+    """Klasörde bu ayın bitmiş raporu da varsa (taslakla karşılaştırmak için) seçer; aynı mükellefe ait olmayanlar ve
+    içerikleri farklı birden fazla aday varsa karşılaştırma yapılmaz (not yazılır)."""
+    metin = (s.k or {}).get('_text') or ''
+    adaylar = []
+    for r in _adaylar(s.belgeler, 'RAPOR'):
+        bilgi = rapor_bilgisi(r.yol, onbellek)
+        r.donem = bilgi['donem']
+        if r.donem != s.donem:
+            continue
+        if bilgi['vkn'] and metindeki_vknler(metin) and not vkn_metinde(bilgi['vkn'], metin):
+            r.notu = 'başka mükellefin raporu (VKN farklı)'
+            continue
+        adaylar.append(r)
+    if not adaylar:
+        return
+    ozetler = set()
+    for r in adaylar:
+        try:
+            ozetler.add(icerik_ozeti(r.yol))
+        except OSError:
+            ozetler.add(str(r.yol))
+    if len(ozetler) > 1:
+        s.notlar.append(('UYARI', 'Gerçek raporla karşılaştırma', f'Klasörde {s.donem.tire} dönemine ait içeriği farklı '
+                         f'{len(adaylar)} bitmiş rapor var ({", ".join(_goreli(r) for r in adaylar)}); hangisinin son hali olduğu '
+                         'bilinmediği için taslak bunlarla karşılaştırılmadı. Karşılaştırmayı "Gerçek raporla karşılaştır" ile yapın.'))
+        return
+    s.bu_ayin_raporu = adaylar[0].yol
+    adaylar[0].rol = 'BU_AYIN_RAPORU'
+
+
+def secim_yap(klasor, belgeler, istenen=None, zorla=None, onbellek=None):
     """Tanınan belgelerden raporda kullanılacakları seçer (zorla: {rol: yol} kullanıcı seçimleri)."""
     from .klasorler import ay_coz
     from .okuyucular.listeler import indirilecek_oku
     zorla = zorla or {}
     s = Secim(Path(klasor), belgeler)
+
+    def adaylar(rol):
+        if zorla.get(rol):
+            return [_zorla_belgesi(s, rol, zorla[rol])], True
+        return _adaylar(s.belgeler, rol), False
+
     klasor_ayi = ay_coz(Path(klasor).name)
-    b, k, n = kdv1_sec(belgeler, istenen, klasor_ayi, zorla.get('KDV1'))
+    b, k, n = kdv1_sec(adaylar('KDV1')[0], istenen, klasor_ayi)
     s.notlar += n
     b.rol, s.yollar['KDV1'], s.donem, s.k = 'KDV1', b.yol, b.donem, k
     if klasor_ayi and (klasor_ayi[0] != s.donem.ay or (klasor_ayi[1] and klasor_ayi[1] != s.donem.yil)):
         s.notlar.append(('UYARI', 'Belge dönemi', f'Klasör adı ("{Path(klasor).name}") başka bir ayı gösteriyor ama beyanname '
                          f'{s.donem.tire} dönemine ait — doğru klasörü seçtiğinizden emin olun.'))
     base = k.get('yurtici_alim', 0) + k.get('sorumlu', 0) + k.get('ithal', 0)
-    lb = _liste_sec(_adaylar(belgeler, 'LISTE_INDIRILECEK'), s.donem, base, s.notlar, zorla.get('LISTE_INDIRILECEK'))
+    a, elle = adaylar('LISTE_INDIRILECEK')
+    lb = _liste_sec(a, s.donem, base, s.notlar, elle)
     satirlar = []
     if lb:
         lb.rol, s.yollar['LISTE_INDIRILECEK'] = 'LISTE_INDIRILECEK', lb.yol
         satirlar = indirilecek_oku(lb.yol)
-    tb = _takip_sec(_adaylar(belgeler, 'TAKIP'), satirlar, s.notlar, zorla.get('TAKIP'))
+    a, elle = adaylar('TAKIP')
+    tb = _takip_sec(a, satirlar, s.notlar, elle)
     if tb:
         tb.rol, s.yollar['TAKIP'] = 'TAKIP', tb.yol
-    db = _dilekce_sec(_adaylar(belgeler, 'TEMINAT_DILEKCE'), s.donem, s.notlar, zorla.get('TEMINAT_DILEKCE'))
+    a, elle = adaylar('TEMINAT_DILEKCE')
+    db = _dilekce_sec(a, s.donem, s.notlar, elle)
     if db:
         db.rol, s.yollar['TEMINAT_DILEKCE'] = 'TEMINAT_DILEKCE', db.yol
     hedef = k.get('301_yuklenilen', 0) + k.get('339_iade', 0)
-    yuk = _adaylar(belgeler, 'LISTE_YUKLENILEN')
-    if hedef or zorla.get('LISTE_YUKLENILEN'):
-        yb = _yuklenilen_sec(yuk, hedef, s.notlar, zorla.get('LISTE_YUKLENILEN'))
+    a, elle = adaylar('LISTE_YUKLENILEN')
+    if hedef or elle:
+        yb = _yuklenilen_sec(a, hedef, s.notlar, elle)
         if yb:
             yb.rol, s.yollar['LISTE_YUKLENILEN'] = 'LISTE_YUKLENILEN', yb.yol
-    elif yuk:
+    elif a:
         s.notlar.append(('BİLGİ', 'Belge seçimi', 'Beyanda 301 yüklenilen KDV yok; yüklenilen listeleri kullanılmadı.'))
-    # bu ayın bitmiş raporu (varsa: taslak sonrası karşılaştırma için)
-    for r in _adaylar(belgeler, 'RAPOR'):
-        bilgi = rapor_bilgisi(r.yol)
-        r.donem = bilgi['donem']
-        if r.donem == s.donem and s.bu_ayin_raporu is None:
-            s.bu_ayin_raporu = r.yol
-            r.rol = 'BU_AYIN_RAPORU'
+    bu_ayin_raporu_sec(s, onbellek)
     for rol, (ad, zorunlu) in ROLLER.items():
         if rol not in s.yollar and zorunlu:
             s.notlar.append(('HATA', 'Eksik belge', f'{ad} bulunamadı (klasörde içeriği bu türe uyan dosya yok). '
@@ -661,33 +835,23 @@ def secim_yap(klasor, belgeler, istenen=None, zorla=None):
 
 
 # ---------------------------------------------------------------- şablon (önceki ayın raporu) arama
-def sablon_bul(klasor, onceki, kdv1_metni=None, onbellek=None, en_cok=150, ilerleme=None, en_cok_klasor=4000):
-    """Seçilen ay klasörünün çevresindeki (kendisi, üstü ve onun üstü; 4 seviye aşağıya kadar) Word dosyalarından kapağındaki
-    dönem `onceki` olan teminat çözüm raporunu içerikten bulur. Kapaktaki mükellef VKN'si beyannamede geçmiyorsa (başka
-    firmanın raporu) alınmaz. Dönüş: (yol | None, notlar). Birden çok farklı rapor bulunursa BelirsizSecim."""
+def sablon_bul(klasor, onceki, kdv1_metni=None, onbellek=None, en_cok=150, ilerleme=None, en_cok_klasor=4000,
+               haric=(), elle_rapor=()):
+    """Seçilen ay klasörünün çevresindeki Word dosyalarından kapağındaki dönem `onceki` olan teminat çözüm raporunu
+    içerikten bulur. Arama yakından uzağa yapılır: önce klasörün kendisi, sonra üstü, sonra onun üstü (her biri 4 seviye
+    aşağıya kadar); bir seviyede rapor bulununca daha uzağa bakılmaz. Kapaktaki mükellef VKN'si beyannamede geçmiyorsa
+    (başka firmanın raporu) alınmaz. haric: kullanıcının başka türe çevirdiği dosyalar; elle_rapor: kullanıcının RAPOR
+    olarak işaretlediği dosyalar. Dönüş: (yol | None, notlar). İçeriği farklı birden çok rapor bulunursa BelirsizSecim."""
     from .klasorler import ay_coz
     klasor = Path(klasor).resolve()
     onbellek = onbellek if onbellek is not None else Onbellek()
     notlar = []
-    kokler = [klasor] + [q for q in klasor.parents][:2]
-    gorulen, adaylar = set(), []
-    gezilen = 0
-    for kok in kokler:
-        for d, dirs, files in os.walk(kok):
-            gezilen += 1
-            if gezilen > en_cok_klasor:
-                notlar.append(('BİLGİ', 'Şablon arama', f'Çevrede çok fazla klasör var; ilk {en_cok_klasor} klasöre bakıldı.'))
-                dirs[:] = []
-                break
-            dp = Path(d)
-            rel = len(dp.relative_to(kok).parts)
-            dirs[:] = [x for x in dirs if katla(x).upper() not in ATLANAN_KLASORLER and not x.startswith('.') and rel < 4]
-            for f in files:
-                p = dp / f
-                if atlanir(f) or p.suffix.lower() not in ('.doc', '.docx') or p in gorulen:
-                    continue
-                gorulen.add(p)
-                adaylar.append(p)
+    haric = [Path(x) for x in haric]
+    elle_rapor = [Path(x) for x in elle_rapor]
+    kokler = [klasor] + list(klasor.parents)[:2]
+    gorulen, gezilen_kokler = set(), []
+    gezilen = incelenen = 0
+    baska_firma, bulunan = [], []
 
     def oncelik(p):
         yol = katla(str(p)).upper()
@@ -698,53 +862,85 @@ def sablon_bul(klasor, onceki, kdv1_metni=None, onbellek=None, en_cok=150, ilerl
         except OSError:
             boy = 0
         return (not ay_uyar, 'RAPOR' not in yol, p.suffix.lower() != '.docx', -boy)
-    adaylar.sort(key=oncelik)
-    bulunan = []
-    # türü bilinmeyen .doc dosyaları tek seferde çevrilir (en fazla en_cok kadar)
-    taranacak = adaylar[:en_cok]
-    if len(adaylar) > en_cok:
-        notlar.append(('BİLGİ', 'Şablon arama', f'Çevredeki {len(adaylar)} Word dosyasından öncelikli {en_cok} tanesine bakıldı.'))
-    docs = [p for p in taranacak if p.suffix.lower() == '.doc' and onbellek.al(p) is None]
-    if docs and ilerleme:
-        ilerleme(f'Önceki ayın raporu aranıyor: {len(docs)} eski Word dosyası okunuyor…')
-    metinler = doc_metinleri(docs) if docs else {}
-    for p in taranacak:
-        c = onbellek.al(p)
-        if c is None:
-            try:
-                metin = metinler.get(p) if p.suffix.lower() == '.doc' else _docx_metni(p)
-            except Exception:  # noqa: BLE001
-                metin = None
-            if metin is None:
+
+    for sira, kok in enumerate(kokler):
+        adaylar = [p for p in elle_rapor if p not in gorulen] if sira == 0 else []
+        gorulen.update(adaylar)
+        for d, dirs, files in os.walk(kok):
+            gezilen += 1
+            if gezilen > en_cok_klasor:
+                notlar.append(('BİLGİ', 'Şablon arama', f'Çevrede çok fazla klasör var; ilk {en_cok_klasor} klasöre bakıldı.'))
+                dirs[:] = []
+                break
+            dp = Path(d)
+            if cikti_klasoru_mu(dp):
+                dirs[:] = []
                 continue
-            c = {'tur': siniflandir(nf(metin))}
-            onbellek.koy(p, c)
-        if c['tur'] != 'RAPOR':
-            continue
-        bilgi = rapor_bilgisi(p, onbellek)
-        if bilgi['donem'] == onceki:
-            bulunan.append((p, bilgi))
-    onbellek.kaydet()
-    if kdv1_metni and metindeki_vknler(kdv1_metni):
-        ayni = [x for x in bulunan if vkn_metinde(x[1]['vkn'], kdv1_metni)]
-        baska = [x for x in bulunan if x[1]['vkn'] and not vkn_metinde(x[1]['vkn'], kdv1_metni)]
-        if baska:
-            notlar.append(('BİLGİ', 'Şablon arama', f'{len(baska)} rapor başka mükellefe (VKN) ait olduğu için alınmadı: '
-                           + ', '.join(str(p) for p, _ in baska[:5])))
-        bulunan = ayni or [x for x in bulunan if not x[1]['vkn']]
+            rel = len(dp.relative_to(kok).parts)
+            dirs[:] = [x for x in dirs if not atlanan_klasor(x) and rel < 4 and (dp / x) not in gezilen_kokler]
+            for f in files:
+                p = dp / f
+                if atlanir(f) or p.suffix.lower() not in ('.doc', '.docx') or p in gorulen:
+                    continue
+                gorulen.add(p)
+                if any(ayni_dosya(p, h) for h in haric):
+                    continue
+                adaylar.append(p)
+        gezilen_kokler.append(kok)
+        adaylar.sort(key=lambda p: (p not in elle_rapor, oncelik(p)))
+        hak = en_cok - incelenen
+        taranacak = adaylar[:hak]
+        if len(adaylar) > hak:
+            notlar.append(('BİLGİ', 'Şablon arama', f'{kok} çevresindeki {len(adaylar)} Word dosyasından öncelikli {hak} '
+                           'tanesine bakıldı.'))
+        incelenen += len(taranacak)
+        docs = [p for p in taranacak if p.suffix.lower() == '.doc' and onbellek.al(p) is None and p not in elle_rapor]
+        if docs and ilerleme:
+            ilerleme(f'Önceki ayın raporu aranıyor: {len(docs)} eski Word dosyası okunuyor…')
+        metinler = doc_metinleri(docs) if docs else {}
+        bulunan = []
+        for p in taranacak:
+            c = {'tur': 'RAPOR'} if p in elle_rapor else onbellek.al(p)
+            if c is None:
+                try:
+                    metin = metinler.get(p) if p.suffix.lower() == '.doc' else _docx_metni(p)
+                except Exception:  # noqa: BLE001
+                    metin = None
+                if metin is None:
+                    continue
+                c = {'tur': siniflandir(nf(metin))}
+                onbellek.koy(p, c)
+            if c['tur'] != 'RAPOR':
+                continue
+            bilgi = rapor_bilgisi(p, onbellek)
+            if bilgi['donem'] == onceki:
+                bulunan.append((p, bilgi))
+        onbellek.kaydet()
+        if kdv1_metni and metindeki_vknler(kdv1_metni):
+            ayni = [x for x in bulunan if vkn_metinde(x[1]['vkn'], kdv1_metni)]
+            baska_firma += [x for x in bulunan if x[1]['vkn'] and not vkn_metinde(x[1]['vkn'], kdv1_metni)]
+            bulunan = ayni or [x for x in bulunan if not x[1]['vkn']]
+        if bulunan:
+            break
+        if incelenen >= en_cok:
+            break
+    if baska_firma:
+        notlar.append(('BİLGİ', 'Şablon arama', f'{len(baska_firma)} rapor başka mükellefe (VKN) ait olduğu için alınmadı: '
+                       + ', '.join(str(p) for p, _ in baska_firma[:5])))
     if not bulunan:
         return None, notlar
     if len(bulunan) > 1:
-        imza = set()
+        ozetler = set()
         for p, _ in bulunan:
             try:
-                imza.add(p.stat().st_size)
+                ozetler.add(icerik_ozeti(p))
             except OSError:
-                imza.add(str(p))
-        if len(imza) > 1:
+                ozetler.add(str(p))
+        if len(ozetler) > 1:
             raise BelirsizSecim('SABLON', [p for p, _ in bulunan],
-                                f'{onceki.tire} dönemine ait birden fazla rapor bulundu. Şablon olarak hangisi kullanılsın '
-                                '(ofisin son hali)?')
+                                f'{onceki.tire} dönemine ait içeriği farklı {len(bulunan)} rapor bulundu. Şablon olarak hangisi '
+                                'kullanılsın (ofisin son hali)?')
+        notlar.append(('BİLGİ', 'Şablon arama', f'{onceki.tire} raporunun {len(bulunan)} aynı kopyası var; {bulunan[0][0]} kullanıldı.'))
     return bulunan[0][0], notlar
 
 

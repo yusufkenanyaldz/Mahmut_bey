@@ -105,16 +105,22 @@ def ayar_oku(yol=None):
     if bilinmeyen:
         raise ValueError(f'{yol.name}: bilinmeyen ayar(lar): {", ".join(sorted(bilinmeyen))}')
     for k, v in d.items():
-        if k == 'ekli_kurali':
-            a.ekli_kurali = EkliKurali(**(v or {}))
-        elif k == 'rapor_referanslari':
-            a.rapor_referanslari = _referanslari_coz(v, yol.parent)
-        elif k in ('iade_turleri',):
-            a.iade_turleri = [str(x) for x in (v or [])]
-        elif k == 'ymm_no':
-            a.ymm_no = str(v)
-        elif k == 'vkn':
-            a.vkn = str(v)
-        elif v is not None:
-            setattr(a, k, v)
+        try:
+            if k == 'ekli_kurali':
+                a.ekli_kurali = EkliKurali(**(v or {}))
+            elif k == 'rapor_referanslari':
+                a.rapor_referanslari = _referanslari_coz(v, yol.parent)
+            elif k in ('iade_turleri',):
+                a.iade_turleri = [str(x) for x in (v or [])]
+            elif k == 'ymm_no':
+                a.ymm_no = str(v)
+            elif k == 'vkn':
+                a.vkn = str(v)
+            elif v is not None:
+                setattr(a, k, v)
+        except ValueError as e:
+            raise ValueError(f'{yol.name}, "{k}" alanı: {e}') from e
+        except (TypeError, KeyError, AttributeError, OSError, yaml.YAMLError) as e:
+            raise ValueError(f'{yol.name}, "{k}" alanı anlaşılamadı ({type(e).__name__}: {e}). Örnek ayar dosyasındaki '
+                             'biçime bakın: firmalar/ornek/ayar.yaml') from e
     return a

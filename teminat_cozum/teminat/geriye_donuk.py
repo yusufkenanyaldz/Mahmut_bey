@@ -8,8 +8,8 @@ from pathlib import Path
 
 from .islem import hazirla
 from .ortak import Donem
-from .tanima import (ATLANAN_KLASORLER, BelirsizSecim, Onbellek, TanimaHatasi, _pdf_metni, atlanir, katla, nf,
-                     siniflandir)
+from .tanima import (BelirsizSecim, Onbellek, TanimaHatasi, _pdf_metni, atlanan_klasor, atlanir, cikti_klasoru_hazirla,
+                     cikti_klasoru_mu, nf, siniflandir)
 from .taslak import taslak_uret
 
 
@@ -47,7 +47,10 @@ def ay_klasorlerini_bul(kok, onbellek=None, ilerleme=None):
     yerler = []
     n = 0
     for d, dirs, files in os.walk(kok):
-        dirs[:] = sorted(x for x in dirs if katla(x).upper() not in ATLANAN_KLASORLER and not x.startswith('.'))
+        if cikti_klasoru_mu(d):
+            dirs[:] = []
+            continue
+        dirs[:] = sorted(x for x in dirs if not atlanan_klasor(x))
         for f in sorted(files):
             if atlanir(f) or not f.lower().endswith('.pdf'):
                 continue
@@ -85,8 +88,7 @@ def ay_klasorlerini_bul(kok, onbellek=None, ilerleme=None):
 def geriye_donuk(ayar, kok, cikti_klasoru, baslangic=None, bitis=None, kati=False, ilerleme=None):
     """Her ay klasörü için: belgeleri içerikten tanı → önceki ayın raporunu şablon olarak bul → taslak üret → o ayın
     klasöründeki bitmiş raporla karşılaştır."""
-    cikti_klasoru = Path(cikti_klasoru)
-    cikti_klasoru.mkdir(parents=True, exist_ok=True)
+    cikti_klasoru = cikti_klasoru_hazirla(cikti_klasoru)
     ob = Onbellek()
     aylar = ay_klasorlerini_bul(kok, ob, ilerleme)
     if not aylar:
@@ -108,7 +110,8 @@ def geriye_donuk(ayar, kok, cikti_klasoru, baslangic=None, bitis=None, kati=Fals
                 sonuc.append(AySonucu(d, 'atlandı', f'Şablon için {d.onceki().tire} raporu bulunamadı.'))
                 continue
             if not hz.secim.bu_ayin_raporu:
-                sonuc.append(AySonucu(d, 'atlandı', f'{klasor} içinde karşılaştırılacak {d.tire} raporu yok.'))
+                neden = [ac for _, konu, ac in hz.secim.notlar if konu == 'Gerçek raporla karşılaştırma']
+                sonuc.append(AySonucu(d, 'atlandı', neden[0] if neden else f'{klasor} içinde karşılaştırılacak {d.tire} raporu yok.'))
                 continue
             tc = taslak_uret(ayar, None, klasor, cikti_klasoru / d.tire, kati=kati, uzerine_yaz=True, hz=hz)
             k = tc.karsilastirma

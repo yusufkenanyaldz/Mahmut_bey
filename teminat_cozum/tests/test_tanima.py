@@ -170,3 +170,167 @@ def test_gercek_pdf_ile_tanima(tmp_path):
     subat, _ = S.karisik_firma(tmp_path, gercek_pdf=True)
     s = secim_yap(subat, tani(subat))
     assert s.donem == SUBAT and s.yollar['KDV1'].name == 'beyan_subat.pdf'
+
+
+# ---------------------------------------------------------------- inceleme bulgularının düzeltmeleri
+def test_ad_anahtari_ay_yil_disindaki_sayilari_ve_klasoru_korur():
+    assert ad_anahtari('KDV 1.pdf') != ad_anahtari('KDV 2.pdf')
+    assert ad_anahtari('SİSTEM/liste.xls') != ad_anahtari('liste.xls')
+    assert ad_anahtari('KDV1_202602.pdf') == ad_anahtari('KDV1_202603.pdf')
+    assert ad_anahtari('liste 02.2026.xls') == ad_anahtari('liste 03.2026.xls')
+
+
+def test_alt_klasordeki_ayni_adli_dosyanin_duzeltmesi_digerine_gecmez(tmp_path):
+    subat, _ = S.karisik_firma(tmp_path)
+    duz = TurDuzeltmeleri(tmp_path / 'belge_turleri.yaml')
+    duz.ayarla(subat / 'SİSTEM' / 'liste.xls', 'YOK_SAY', subat)
+    b = {x.goreli: x for x in tani(subat, TurDuzeltmeleri(tmp_path / 'belge_turleri.yaml'))}
+    assert b['SİSTEM/liste.xls'].tur == 'YOK_SAY' and b['liste.xls'].tur == 'LISTE_INDIRILECEK'
+    assert secim_yap(subat, list(b.values())).yollar['LISTE_INDIRILECEK'].name == 'liste.xls'
+    duz.kaldir(subat / 'SİSTEM' / 'liste.xls', subat)
+    assert TurDuzeltmeleri(tmp_path / 'belge_turleri.yaml').tur(subat / 'SİSTEM' / 'liste.xls', subat) is None
+
+
+def test_ayar_dosyasi_yoksa_duzeltme_ortak_dosyaya_yazilmaz(tmp_path):
+    from teminat.islem import duzeltme_dosyasi
+    assert duzeltme_dosyasi(None) is None
+    with pytest.raises(ValueError, match='ayar dosyasını seçin'):
+        TurDuzeltmeleri(None).ayarla(tmp_path / 'a.xls', 'YOK_SAY')
+
+
+def test_bozuk_duzeltme_dosyasi_ezilmez(tmp_path):
+    dosya = tmp_path / 'belge_turleri.yaml'
+    dosya.write_text('A.XLS: YOK_SAY\nB.XLS: "KDV2\n', encoding='utf-8')
+    d = TurDuzeltmeleri(dosya)
+    assert d.bozuk
+    with pytest.raises(ValueError, match='okunamadı'):
+        d.ayarla(tmp_path / 'c.xls', 'YOK_SAY')
+    assert 'B.XLS' in dosya.read_text(encoding='utf-8')
+
+
+def test_tarih_donem_sayilmaz():
+    assert not metindeki_donemler('16/02/2026 tarih ve 1234 nolu mektup; 20 Şubat 2026 tarihli')
+    assert metindeki_donemler('2026/01 dönemine ait')[Donem(2026, 1)] == 1
+
+
+def _dilekce(path, metin):
+    S._docx_yaz(path, ['GAZİANTEP VERGİ DAİRESİ MÜDÜRLÜĞÜNE', metin])
+
+
+def test_yalnizca_onceki_ayin_dilekcesi_varsa_uyari(tmp_path):
+    subat, _ = S.karisik_firma(tmp_path)
+    (subat / 'dilekce.docx').unlink()
+    s = secim_yap(subat, tani(subat))
+    assert s.yollar['TEMINAT_DILEKCE'].name == 'dilekce ocak.docx'
+    assert any(n[0] == 'UYARI' and n[1] == 'Belge dönemi' and 'OCAK-2026' in n[2] for n in s.notlar)
+
+
+def test_onceki_ayin_dilekcesi_sonraki_ay_tarihli_olsa_da_secilmez(tmp_path):
+    g = S.girdi_klasoru_yol(tmp_path / 'x', S.Senaryo(SUBAT, teminat={}))
+    _dilekce(g / 'a.docx', 'Firmamızın 2026/01 dönemine ait 16/02/2026 tarih ve 111 nolu teminat mektubu karşılığında '
+                           'toplam 1.000,00 TL talep edilmiştir.')
+    _dilekce(g / 'b.docx', 'Firmamızın 2026/02 dönemine ait 20/03/2026 tarih ve 222 nolu teminat mektubu karşılığında '
+                           'toplam 2.000,00 TL talep edilmiştir.')
+    s = secim_yap(g, tani(g))
+    assert s.yollar['TEMINAT_DILEKCE'].name == 'b.docx'
+
+
+def test_puani_esit_icerigi_farkli_takip_listeleri_sorulur(tmp_path):
+    subat, _ = S.karisik_firma(tmp_path)
+    satirlar = S.takip_satirlari(S.Senaryo(SUBAT))
+    S._xls(subat / 'muh bilgi eski.xls', satirlar[:1] + [r[:-1] + [''] for r in satirlar[1:]])   # YMM sütunu boş
+    with pytest.raises(BelirsizSecim) as e:
+        secim_yap(subat, tani(subat))
+    assert e.value.rol == 'TAKIP' and len(e.value.adaylar) == 2
+    shutil.copy(subat / 'muh bilgi.xls', subat / 'muh bilgi eski.xls')             # aynı içerikli kopya: sorulmaz
+    s = secim_yap(subat, tani(subat))
+    assert any('aynı içerikli' in n[2] for n in s.notlar)
+
+
+def test_secilen_dosya_tanima_tablosunda_kullanilan_gorunur(tmp_path):
+    subat, _ = S.karisik_firma(tmp_path)
+    S._xls(subat / 'firmalar.xls', [['NOT', 'MÜŞAVİR']] + [r for r in S.takip_satirlari(S.Senaryo(SUBAT))[1:]])
+    s = secim_yap(subat, tani(subat), zorla={'TAKIP': subat / 'firmalar.xls'})
+    b = {x.goreli: x for x in s.belgeler}
+    assert b['firmalar.xls'].rol == 'TAKIP' and b['firmalar.xls'].elle
+    assert sum(1 for x in s.belgeler if x.yol.name == 'firmalar.xls') == 1
+
+
+def test_sablon_kopyalari_ayni_icerikse_sorulmaz_farkliysa_sorulur(tmp_path):
+    from teminat.tanima import sablon_bul
+    subat, v = S.karisik_firma(tmp_path)
+    kopya = v['sablon'].parent.parent / 'yedek' / 'ocak kopya.docx'
+    kopya.parent.mkdir()
+    shutil.copy(v['sablon'], kopya)
+    yol, notlar = sablon_bul(subat, Donem(2026, 1), S.kdv1_metni(v['subat']))
+    assert yol is not None and any('aynı kopyası' in n[2] for n in notlar)
+    S.sablon_docx(kopya, v['ocak'], rapor_sayisi='2026-99')                        # aynı dönem, farklı içerik
+    with pytest.raises(BelirsizSecim) as e:
+        sablon_bul(subat, Donem(2026, 1), S.kdv1_metni(v['subat']))
+    assert e.value.rol == 'SABLON'
+
+
+def test_sablon_aramasi_yakindan_uzaga(tmp_path):
+    """Yakındaki (üst klasördeki) rapor bulununca daha uzaktaki klasörlere bakılmaz."""
+    from teminat.tanima import sablon_bul
+    subat, v = S.karisik_firma(tmp_path)
+    uzak = tmp_path / 'ÖRNEK METAL' / 'başka yıl' / 'arşiv' / 'ocak.docx'
+    uzak.parent.mkdir(parents=True)
+    S.sablon_docx(uzak, v['ocak'], rapor_sayisi='2026-77')                        # aynı dönem, farklı içerik, daha uzakta
+    yol, _ = sablon_bul(subat, Donem(2026, 1), S.kdv1_metni(v['subat']))
+    assert yol == v['sablon'].resolve()
+
+
+def test_yok_sayilan_rapor_sablon_olmaz(tmp_path):
+    subat, v = S.karisik_firma(tmp_path)
+    ic = subat / 'eski' / 'ocak raporu.docx'
+    shutil.move(str(v['sablon']), str(ic))                                         # şablon yalnızca ay klasöründe
+    assert hazirla(subat).sablon == ic.resolve()
+    from teminat.ayar import FirmaAyari
+    a = FirmaAyari(_yol=tmp_path / 'ayar.yaml')
+    TurDuzeltmeleri(tmp_path / 'belge_turleri.yaml').ayarla(ic, 'YOK_SAY', subat)
+    assert hazirla(subat, a).sablon is None
+
+
+def test_cikti_klasoru_girdi_sayilmaz(tmp_path, ayar):
+    from teminat.taslak import taslak_uret
+    subat, _ = S.karisik_firma(tmp_path)
+    taslak_uret(ayar, None, subat, subat / 'taslaklar')
+    tc = taslak_uret(ayar, None, subat, subat / 'taslaklar')
+    assert tc.hazirlik.secim.bu_ayin_raporu is None and tc.farklar is None
+    assert not any(b.goreli.startswith('taslaklar') for b in tc.hazirlik.secim.belgeler)
+
+
+def test_baska_mukellefin_bu_ay_raporu_karsilastirilmaz(tmp_path, ayar):
+    subat, v = S.karisik_firma(tmp_path)
+    S.sablon_docx(subat / 'karşılaştırma.docx', v['subat'], vkn='1234567890')
+    s = secim_yap(subat, tani(subat))
+    assert s.bu_ayin_raporu is None
+
+
+def test_ayar_alan_hatasi_anlasilir(tmp_path):
+    from teminat.ayar import ayar_oku
+    (tmp_path / 'a.yaml').write_text('ekli_kurali: {yurtici: 12}\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='ekli_kurali'):
+        ayar_oku(tmp_path / 'a.yaml')
+
+
+@pytest.mark.skipif(not __import__('teminat.donusum', fromlist=['x']).soffice_yolu(), reason='LibreOffice yok')
+def test_ayni_adli_doc_dosyalari_karismaz(tmp_path):
+    import subprocess
+    from teminat.donusum import docx_hazirla, soffice_yolu
+    from teminat.tanima import doc_metinleri
+    yollar = []
+    for ad, metin in (('a', 'BİRİNCİ BELGE'), ('b', 'İKİNCİ BELGE')):
+        d = tmp_path / ad
+        d.mkdir()
+        S._docx_yaz(d / 'RAPOR.docx', [metin])
+        subprocess.run([soffice_yolu(), f'-env:UserInstallation={(tmp_path / "profil").as_uri()}', '--headless',
+                        '--convert-to', 'doc', '--outdir', str(d), str(d / 'RAPOR.docx')], capture_output=True, timeout=180)
+        (d / 'RAPOR.docx').unlink()
+        yollar.append(d / 'RAPOR.doc')
+    m = doc_metinleri(yollar)
+    assert 'BİRİNCİ' in m[yollar[0]] and 'İKİNCİ' in m[yollar[1]]
+    from teminat.tanima import _docx_metni
+    x, y = docx_hazirla(yollar[0], tmp_path / 'c'), docx_hazirla(yollar[1], tmp_path / 'c')
+    assert x != y and 'BİRİNCİ' in _docx_metni(x) and 'İKİNCİ' in _docx_metni(y)
